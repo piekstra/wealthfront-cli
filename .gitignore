@@ -1,0 +1,9 @@
+/target
+**/*.rs.bk
+.DS_Store
+
+# Never commit real exports or captures. Fixtures live in tests/fixtures/ and
+# are synthetic by policy (see tests/fixtures/README.md).
+*.har
+/captures/
+/scratch/

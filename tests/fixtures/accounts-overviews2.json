@@ -1,0 +1,43 @@
+{
+  "overviews": [
+    {
+      "type": "CASH",
+      "accountId": "ACCT-XXXX-0001",
+      "state": "ACTIVE",
+      "accountType": "PERSONAL_CASH",
+      "accountTypeDisplayName": "Individual",
+      "accountDisplayName": "Individual Cash Account",
+      "accountValueSummary": {
+        "totalValue": 1234.56,
+        "formattedTotalValue": "$1,234.56",
+        "availableValue": 1000.0,
+        "formattedAvailableValue": "$1,000.00",
+        "pendingValue": 0.0,
+        "formattedPendingValue": "$0.00",
+        "breakdown": []
+      },
+      "accountActionsRequired": [],
+      "iconType": "CASH",
+      "needsReview": false,
+      "currentRate": 4.0,
+      "isCurrentRateBoosted": false,
+      "cashCategories": [],
+      "cashFundSummary": {
+        "totalSpendingBalance": 1234.56,
+        "formattedTotalSpendingBalance": "$1,234.56"
+      }
+    },
+    {
+      "type": "CASH",
+      "accountId": "ACCT-XXXX-0002",
+      "state": "ACTIVE",
+      "accountType": "JOINT_CASH",
+      "accountTypeDisplayName": "Joint",
+      "accountDisplayName": "Joint Cash Account",
+      "accountValueSummary": {
+        "totalValue": 5000.0,
+        "formattedTotalValue": "$5,000.00"
+      }
+    }
+  ]
+}

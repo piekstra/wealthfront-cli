@@ -1,0 +1,12 @@
+﻿Wealthfront Activity Export
+Account: Individual Investment Account (••••0000)
+
+Transaction date,Description,Type,Amount,Balance
+"January 31, 2026","Advisory fee, monthly",Fee,2.08-,"1,234.56"
+1/22/26,"Dividend — VTI, reinvested",Dividend,"$18.44","1,236.64"
+
+01-15-2026,Automated deposit,Deposit,"$1,000.00","2,236.64"
+2026-01-09,Withdrawal to linked bank,Withdrawal,(250.00),"1,986.64"
+2026-13-45,Corrupt row that is not a date,Deposit,10.00,
+,Total,,"766.36",
+Ending balance,,,,"1,986.64"

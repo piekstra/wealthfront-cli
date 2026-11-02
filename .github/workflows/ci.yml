@@ -1,0 +1,98 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# Cancel superseded runs on the same ref rather than paying for both.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  verify:
+    # Linux only, deliberately. The whole suite is offline — no network, no
+    # keychain — so a macOS runner (10x the cost) would exercise nothing extra.
+    # The keychain-backed paths are opt-in behind WFR_TEST_KEYCHAIN=1 and are
+    # meant to be run locally on the machine that actually holds the
+    # credential.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: linux deps
+        # dbus dev headers for the secret-service keyring backend, which the
+        # `keyring` crate links on Linux even when no test touches it.
+        run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev pkg-config
+      - name: fmt
+        run: cargo fmt --all -- --check
+      - name: clippy
+        run: cargo clippy --all-targets --locked -- -D warnings
+      - name: test
+        run: cargo test --all --locked
+      - name: "smoke (offline: no network, no credential)"
+        run: |
+          cargo build --release --locked
+          ./target/release/wfr --version
+          ./target/release/wfr --help > /dev/null
+          ./target/release/wfr info > /dev/null
+          ./target/release/wfr mcp --list-tools > /dev/null
+          ./target/release/wfr --json import csv tests/fixtures/activity-cash.csv > /dev/null
+
+  security:
+    name: security
+    # Linux, like verify: nothing here is platform-specific. The job reads the
+    # lockfile and the git history and builds nothing of wfr's.
+    runs-on: ubuntu-latest
+    # Read-only is enough because every tool runs as a plain binary. The
+    # audit-check and gitleaks actions call the PR API and need write scopes;
+    # these binaries do not.
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # gitleaks scans history, not just the tip
+      - uses: dtolnay/rust-toolchain@stable
+      # Caches ~/.cargo/bin too, so the tools below are built once, not per run.
+      - uses: Swatinem/rust-cache@v2
+      - name: install audit tooling
+        # Pinned, so a new tool release cannot change the gate without a
+        # change here. These are the versions the local mirror runs.
+        # (`--version`, not `crate@version`: the privacy test in
+        # tests/fixture_shapes.rs reads `name@host` as an email address.)
+        run: |
+          cargo install cargo-audit --version 0.22.2 --locked
+          cargo install cargo-deny --version 0.20.2 --locked
+      - name: cargo audit
+        # The whole lockfile, entries behind inactive features included.
+        run: cargo audit
+      - name: cargo deny
+        # deny.toml: advisories (yanked denied), licenses, bans, sources.
+        run: cargo deny check
+      - name: gitleaks
+        # The full history, not a commit range: gitleaks-action derives
+        # `<before>^..<after>`, which does not resolve on a first push. The
+        # tarball is checked against the SHA-256 pinned here (the release's
+        # gitleaks_8.24.3_checksums.txt entry) before anything runs from it.
+        env:
+          GITLEAKS_VERSION: "8.24.3"
+          GITLEAKS_SHA256: "9991e0b2903da4c8f6122b5c3186448b927a5da4deef1fe45271c3793f4ee29c"
+        run: |
+          tarball="$RUNNER_TEMP/gitleaks.tar.gz"
+          curl -sSfL -o "$tarball" \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          echo "${GITLEAKS_SHA256}  ${tarball}" | sha256sum --check --strict
+          tar -xzf "$tarball" -C "$RUNNER_TEMP" gitleaks
+          "$RUNNER_TEMP/gitleaks" detect --source . --redact --no-banner --verbose --exit-code 1

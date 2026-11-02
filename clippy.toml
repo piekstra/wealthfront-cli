@@ -1,0 +1,6 @@
+# The process environment is shared by every test in a run, and they run in
+# parallel, so no code here sets or removes a variable (AGENTS.md, Tests).
+disallowed-methods = [
+    { path = "std::env::set_var", reason = "the environment is shared by every test in the process: pass the value to a pure function that decides on it (client::base_from), or set it on a child process's Command" },
+    { path = "std::env::remove_var", reason = "the environment is shared by every test in the process: pass the value to a pure function that decides on it (client::base_from), or clear it on a child process's Command" },
+]

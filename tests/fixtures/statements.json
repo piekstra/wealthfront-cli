@@ -1,0 +1,7 @@
+{
+  "statements": [
+    { "accountId": 3000000, "type": "STATEMENT", "date": "20260131", "externalId": "DOCA-XXXX-0000-0001" },
+    { "accountId": 3000000, "type": "CONFIRM", "date": "20260115", "externalId": "DOCB-XXXX-0000-0002" },
+    { "accountId": 3000000, "type": "GREEN_DOT_STATEMENT", "date": "20260114", "externalId": "DOCD-XXXX-0000-0003" }
+  ]
+}

@@ -1,0 +1,41 @@
+{
+  "activities": [
+    {
+      "type": "TXN_DEPOSIT",
+      "headline": "Deposit",
+      "body": "We received your deposit in the amount of $1,250.00.",
+      "date": "2026-01-05",
+      "id": "ACT-XXXX-0001",
+      "url": "/activity/ACT-XXXX-0001"
+    },
+    {
+      "type": "TXN_INTEREST",
+      "headline": "Interest",
+      "body": "You received interest in the amount of $0.15.",
+      "date": "2026-01-31",
+      "id": "ACT-XXXX-0002"
+    },
+    {
+      "type": "TXN_WITHDRAWAL",
+      "headline": "Withdrawal",
+      "body": "We completed your withdrawal in the amount of $40.00.",
+      "date": "2026-02-01",
+      "id": "ACT-XXXX-0003"
+    },
+    {
+      "type": "PROMOTIONAL_BLOG",
+      "headline": "Investing 101",
+      "body": "Read our latest post about long-term investing.",
+      "date": "2026-02-10",
+      "id": "ACT-XXXX-0004",
+      "url": "/blog/investing-101"
+    },
+    {
+      "type": "INVITE_SIGNUP",
+      "headline": "A friend joined",
+      "body": "Someone you invited signed up.",
+      "date": "2026-02-11",
+      "id": "ACT-XXXX-0005"
+    }
+  ]
+}

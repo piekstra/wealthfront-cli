@@ -1,0 +1,57 @@
+{
+  "manifest_version": "0.3",
+  "name": "wfr",
+  "display_name": "Wealthfront (wfr)",
+  "version": "0.2.0",
+  "description": "Read-only access to your own Wealthfront balances, activity and statements, through the open-source wfr CLI.",
+  "long_description": "Ask Claude about your Wealthfront accounts: what each one is worth and their total, what moved in or out over a period (deposits, withdrawals, interest), and which statements and trade confirmations exist. Three read-only tools, wealthfront_accounts, wealthfront_activity and wealthfront_documents; nothing can trade, transfer or change your account. The extension asks for no password: Wealthfront sign-in is through a browser, so first install the wfr CLI and run `wfr auth login --browser` in a terminal. That stores the session in your OS keychain, and the bundled wfr reads it from there and keeps it current. On macOS the first call asks for keychain access; choose Always Allow. Unofficial; not affiliated with Wealthfront.",
+  "author": {
+    "name": "piekstra",
+    "url": "https://github.com/piekstra"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/piekstra/wealthfront-cli"
+  },
+  "homepage": "https://github.com/piekstra/wealthfront-cli",
+  "documentation": "https://github.com/piekstra/wealthfront-cli#use-with-claude",
+  "support": "https://github.com/piekstra/wealthfront-cli/issues",
+  "license": "MIT",
+  "keywords": ["wealthfront", "cash account", "investing", "finance", "read-only"],
+  "server": {
+    "type": "binary",
+    "entry_point": "server/wfr",
+    "mcp_config": {
+      "command": "${__dirname}/server/wfr",
+      "args": ["mcp"],
+      "platform_overrides": {
+        "win32": {
+          "command": "${__dirname}/server/wfr.exe",
+          "args": ["mcp"]
+        },
+        "linux": {
+          "command": "${__dirname}/server/linux/wfr",
+          "args": ["mcp"]
+        }
+      }
+    }
+  },
+  "tools": [
+    {
+      "name": "wealthfront_accounts",
+      "description": "Each account's current value, and their total."
+    },
+    {
+      "name": "wealthfront_activity",
+      "description": "Transactions over a date range: deposits, withdrawals, interest and fees."
+    },
+    {
+      "name": "wealthfront_documents",
+      "description": "Statements and trade confirmations on file (listed, not downloaded)."
+    }
+  ],
+  "tools_generated": false,
+  "compatibility": {
+    "platforms": ["darwin", "win32", "linux"]
+  }
+}
