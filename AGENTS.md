@@ -115,14 +115,15 @@ rather than embedding DevTools code here again.
 Linux), which stays on disk so Wealthfront's remembered device and session
 carry over and a later sign-in often needs no input. `--fresh-profile` runs one
 sign-in in a scratch profile and leaves the kept one alone. `auth logout`
-removes the kept profile as its last step, through `logout_browser`, whose
+removes the kept profile as its last step, through `run_logout`, whose
 removal is a closure: the binary binds `forget_profile(BIN)`, tests bind
 `forget_profile_in(&temp_dir, BIN)`. A test never reaches the real profile.
 It is a full Chrome profile: history with full URLs, the HTTP cache and site
 storage sit outside Chrome's cookie encryption, and on Linux with no desktop
 keyring so does the session cookie (SECURITY.md). A failed sign-in leaves it, and
 every failure gets the note because the whole sign-in runs inside
-`noting_kept_profile`. A refused logout's error says the session is already cleared. `auth status` does
+`noting_kept_profile`. Every logout step is attempted, and a failed
+logout's error says what was cleared and what remains. `auth status` does
 not report the profile: cli-common v0.16.0 has no call for it, and wfr must not
 work out the path itself. The capture reads no `localStorage`; keep it that way,
 or a stale token bundle in the kept profile becomes readable on page load.
@@ -141,9 +142,9 @@ opens the file; `api` parses the method before building a client.
 magic number. Logins require a positive signal, and *rejection is checked
 first* — a rejected login often renders an MFA-shaped page, and testing for
 the code prompt first makes the CLI ask for a code nobody sent.
-`GET /capitan/v1/me` counts as signed in only when it answers a JSON object
-(`Wf::me`). A 200 that is empty, `null` or any other JSON value is an upstream
-error (exit 5), for the browser confirm, the password login and
+`GET /capitan/v1/me` counts as signed in only when it answers a non-empty JSON
+object (`Wf::me`). A 200 that is empty, `null`, `{}` or any other JSON value is
+an upstream error (exit 5), for the browser confirm, the password login and
 `auth status --verify` alike: a visitor's answer is a 401, not an empty 200.
 
 **Records that fail to map are counted on stderr** (`note_dropped`). An
@@ -213,7 +214,7 @@ server: no jar fails before any read, a JSON object is `Ready` and the read
 sends the jar with `x-csrf-token`, a signed-out answer is `NotYet`, and
 anything else (an empty or `null` 200 included) ends the wait as exit 5.
 
-**The logout's browser step is tested on a temp dir.** `logout_browser` takes
+**The logout's browser step is tested on a temp dir.** `run_logout` takes
 the removal as a closure; its tests fill it with `forget_profile_in` (the same
 feature) or a canned refusal, so no test can remove the owner's real profile.
 

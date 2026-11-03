@@ -148,17 +148,22 @@ fn fresh_profile_requires_the_browser_flag() {
         .stderr(predicate::str::contains("--browser"));
 }
 
-/// A logout whose profile removal is refused has already cleared the rest, and
-/// its help says so before anyone runs into it.
+/// The summary `auth --help` lists stays one line; the detail of a logout that
+/// cannot finish is in `auth logout --help`.
 #[test]
-fn logout_help_says_a_refused_profile_leaves_the_rest_cleared() {
+fn logout_help_keeps_the_refusal_detail_out_of_the_summary() {
+    wfr()
+        .args(["auth", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--forget also"))
+        .stdout(predicate::str::contains("still cleared").not());
     wfr()
         .args(["auth", "logout", "--help"])
         .assert()
         .success()
-        .stdout(predicate::str::contains(
-            "the rest is still cleared and this exits 1",
-        ));
+        .stdout(predicate::str::contains("Every step is attempted"))
+        .stdout(predicate::str::contains("the rest is still cleared"));
 }
 
 /// A loopback stand-in for www.wealthfront.com serving the two login-flow

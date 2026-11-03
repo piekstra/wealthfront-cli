@@ -81,10 +81,11 @@ So:
   is not your user's or is not `0700`.
 - One sign-in uses it at a time. A second, or a launch while a Chrome still runs
   in it, is refused (exit 1).
-- `wfr auth logout` removes it, after clearing the keychain items, and refuses
-  while it is in use or when it is a symlink or another user's (exit 1). The
-  error says the session is already cleared and only the profile remains, names
-  the path and says how to finish.
+- `wfr auth logout` removes it, and refuses while it is in use or when it is a
+  symlink or another user's. Every step of a logout is attempted, so a refusal or
+  a failed keychain or config step leaves the rest done. The error says what was
+  cleared and what remains, names the path and says how to finish, with the first
+  failure's exit code.
 - A sign-in that fails for any reason leaves it in place, possibly signed in: a
   timeout, a closed window, Ctrl-C, a confirm read that ends the wait, a keychain
   write that fails after the capture. The error says so and names `wfr auth
@@ -92,7 +93,8 @@ So:
   kills Chrome with no such message. `wfr auth status` does not report it:
   cli-common v0.16.0 has no call that says whether a profile exists.
 - A session cookie left in it from an earlier sign-in is not trusted alone: only
-  a `GET /capitan/v1/me` that answers the account object accepts a session.
+  a `GET /capitan/v1/me` that answers a non-empty account object accepts a
+  session, so an unverified session cannot replace a working one.
 - `--fresh-profile` runs one sign-in in a scratch profile instead, created
   `0700`, exclusively (an existing path is refused, never adopted), under an
   unpredictable name in the temp dir, and removed when the window closes. One

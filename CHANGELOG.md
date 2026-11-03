@@ -16,6 +16,9 @@ keeps, where it used to run in a scratch profile deleted after every sign-in.
   with the crate's message while a sign-in or a Chrome is using the profile, or
   when the path is a symlink or another user's; the keychain items are cleared
   by then, and the error and `auth logout --help` say so.
+- `wfr auth logout` attempts every step even when one fails, and says what was
+  cleared and what remains, with the first failure's exit code.
+- `GET /capitan/v1/me` answering `{}` no longer counts as signed in.
 - While `WFR_KEYCHAIN_SERVICE` names a service, `wfr auth logout` leaves the real
   profile in place and `wfr auth login --browser` uses a scratch profile, and each
   says so.

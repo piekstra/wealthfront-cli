@@ -510,7 +510,7 @@ the page list and the cookies are browser-level reads.
 | Host | pages on exactly `www.wealthfront.com` (`https`, default port), parsed and compared label for label. The apex, other wealthfront.com hosts and look-alikes are never read or closed. |
 | Gate | the `_wfsid` cookie, as the browser would send it to `https://www.wealthfront.com/` |
 | The session | every cookie the browser would send to `wealthfront.com` or a host under it, `HttpOnly` included, as one `k=v; k=v` header: the jar §3.4 needs |
-| Confirm | on each 3-second poll, once the gate passes and before the tab closes, one `GET /capitan/v1/me` with that jar. A JSON object closes the tab and hands the jar over. A signed-out answer (401, 403, a redirect to the sign-in or 2FA page, or HTML where JSON was expected) keeps waiting. Anything else ends the login as exit 5: 404, 429, 5xx, a 200 that is empty, `null`, not JSON or JSON other than an object (no signed-out answer has that shape; a visitor gets 401), the network, a cookie or CSRF bug, `session validation failed during the browser login: …`. |
+| Confirm | on each 3-second poll, once the gate passes and before the tab closes, one `GET /capitan/v1/me` with that jar. A non-empty JSON object closes the tab and hands the jar over. A signed-out answer (401, 403, a redirect to the sign-in or 2FA page, or HTML where JSON was expected) keeps waiting. Anything else ends the login as exit 5: 404, 429, 5xx, a 200 that is empty, `null`, not JSON or JSON other than an object (no signed-out answer has that shape; a visitor gets 401), the network, a cookie or CSRF bug, `session validation failed during the browser login: …`. |
 | Stored | the confirmed jar, unchanged, under keychain `piekstra.wfr/session`: the bundle the password login stores and every read seeds from |
 
 Each Confirm outcome is tested offline. The unit tests in
@@ -551,7 +551,7 @@ logged in — session captured from the browser
 | 10 minutes pass, or the window is closed first. The message names what was seen (no `www.wealthfront.com` page open, `_wfsid` not set, or `GET /capitan/v1/me answered as signed out`, with the jar's cookie names, never values) and says ``Re-run `wfr auth login --browser` and finish signing in.`` In a kept profile it ends with the note below | 3 |
 | The confirm read failed for a reason other than sign-in | 5 |
 | Ctrl-C (`browser login canceled`), no Chrome found, or Chrome failed to start | 1 |
-| The kept profile is in use (another sign-in, or a Chrome still running in it) or needs repair (a symlink, another user's, not `0700`). The message names the path and what to do. The same goes for `wfr auth logout`, whose error adds that the session is already cleared and only the browser profile remains | 1 |
+| The kept profile is in use (another sign-in, or a Chrome still running in it) or needs repair (a symlink, another user's, not `0700`). The message names the path and what to do. `wfr auth logout` refuses the same way, after attempting every other step, and its error says what was cleared and what remains | 1 |
 | A second Ctrl-C, when the first did not end the wait: Chrome is killed, and a scratch profile deleted | 130 |
 
 **The surface around it.** `--browser` takes no other credential source: with
