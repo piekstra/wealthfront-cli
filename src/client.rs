@@ -193,9 +193,6 @@ struct SessionSync {
 
 pub struct Wf {
     http: Client,
-    /// For a request with a password or a code in its body. reqwest re-sends a body on a 307 or
-    /// 308, so this client follows no redirect to another host. It shares `http`'s jar.
-    auth_http: Client,
     jar: Arc<Jar>,
     sync: Option<SessionSync>,
     base: String,
@@ -256,17 +253,16 @@ impl Wf {
     /// tests (the same pattern as sofi-cli's `with_base`).
     fn with_base(base: String) -> Result<Self, CliError> {
         let jar = Arc::new(Jar::default());
-        let client = |redirects| {
-            pk_cli_http::builder("wfr", env!("CARGO_PKG_VERSION"))
-                .cookie_provider(jar.clone())
-                .timeout(Duration::from_secs(45))
-                .redirect(redirects)
-                .build()
-                .map_err(|e| CliError::Upstream(format!("building HTTP client: {e}")))
-        };
+        // No redirect to another host, for any request. reqwest re-sends a body on a 307 or 308,
+        // and a password or a code can be in one, and it keeps `x-csrf-token` on every hop.
+        let http = pk_cli_http::builder("wfr", env!("CARGO_PKG_VERSION"))
+            .cookie_provider(jar.clone())
+            .timeout(Duration::from_secs(45))
+            .redirect(pk_cli_core::transport::same_host_redirects())
+            .build()
+            .map_err(|e| CliError::Upstream(format!("building HTTP client: {e}")))?;
         Ok(Wf {
-            http: client(pk_cli_core::transport::secure_redirects())?,
-            auth_http: client(pk_cli_core::transport::same_host_redirects())?,
+            http,
             jar,
             sync: None,
             base,
@@ -475,7 +471,7 @@ impl Wf {
 
     pub fn post_json(&self, path: &str, body: &Value) -> Result<Value, CliError> {
         let req = self
-            .auth_http
+            .http
             .post(self.url(path))
             .header("Accept", "application/json")
             .json(body);
@@ -602,7 +598,7 @@ impl Wf {
             "browserInfo": {},
         });
         let resp = self
-            .auth_http
+            .http
             .post(self.url(endpoints::LOGIN))
             .header("Accept", "application/json")
             .header("Origin", self.base.clone())
@@ -1284,6 +1280,18 @@ mod tests {
         let err = wf
             .login("probe@example.invalid", &Secret::new("dummy-pw"))
             .unwrap_err();
+        assert!(err.to_string().contains("another host"), "{err}");
+        handle.join().expect("server thread");
+    }
+
+    /// A read carries `x-csrf-token`, which reqwest keeps across hosts.
+    #[test]
+    fn a_read_answered_with_a_redirect_to_another_host_goes_no_further() {
+        let (base, handle) = crate::loopback::serve(1, move |_| {
+            crate::loopback::response("302 Found", &["Location: http://127.0.0.1:9/elsewhere"], "")
+        });
+        let wf = Wf::with_base(base).expect("client builds");
+        let err = wf.get_json("/capitan/v1/me").unwrap_err();
         assert!(err.to_string().contains("another host"), "{err}");
         handle.join().expect("server thread");
     }

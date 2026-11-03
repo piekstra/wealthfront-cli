@@ -259,6 +259,27 @@ fn accounts_page_with_a_cursor_bound_to_the_filters() {
 
 // ---- wealthfront_activity ---------------------------------------------------
 
+/// Two rows that say the same thing and hold no id, split by a page boundary: both are seen.
+#[test]
+fn identical_rows_with_no_id_are_both_seen_across_a_page_boundary() {
+    let mut fixtures = Fixtures::new();
+    let mut row = fixtures.activity[0].clone();
+    row.as_object_mut().unwrap().remove("id");
+    fixtures.activity = vec![row.clone(), row];
+    fixtures.joint_activity.clear();
+    let t = WealthfrontTools::new(fixtures);
+    let args = json!({"since": "2026-01-01", "until": "2026-12-31", "limit": 1});
+    let r = call(&t, ACTIVITY_TOOL, args.clone());
+    let first = assert_fits(&t, ACTIVITY_TOOL, &r);
+    assert_eq!(first["returned"], 1);
+    let mut next = args;
+    next["cursor"] = first["next_cursor"].clone();
+    let r = call(&t, ACTIVITY_TOOL, next);
+    let second = assert_fits(&t, ACTIVITY_TOOL, &r);
+    assert_eq!(second["returned"], 1);
+    assert!(second["next_cursor"].is_null());
+}
+
 /// A count of rows would show the first page's last row again.
 #[test]
 fn an_activity_row_that_arrives_between_pages_repeats_nothing() {
