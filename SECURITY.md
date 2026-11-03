@@ -32,15 +32,16 @@ token, and config identity.
 
 ## Browser sign-in
 
-`wfr auth login --browser` runs cli-common's `pk-cli-browser`
-([cli-common DESIGN.md §2.2](https://github.com/piekstra/cli-common/blob/v0.16.0/DESIGN.md)).
+`wfr auth login --browser` runs cli-common's `pk-cli-browser` ([cli-common
+DESIGN.md §2.2](https://github.com/piekstra/cli-common/blob/v0.19.0/DESIGN.md)).
 You type the password and the 2FA code on Wealthfront's own page in a Chrome
 window; they never pass through `wfr`. While the window is open:
 
-- **The debug port has no authentication.** Chrome is launched with a
-  DevTools port, and anything that can reach `127.0.0.1:<port>` or read the
-  profile's `DevToolsActivePort` file can read every cookie in the window. So
-  the profile is owner-only (below), and Chrome is stopped on every exit,
+- **The debug port has no authentication.** Chrome is launched with a DevTools
+  port, and anything that can reach `127.0.0.1:<port>` or read the profile's
+  `DevToolsActivePort` file can read every cookie in the window. So the profile
+  is owner-only (below), and Chrome is stopped on every exit (a kept profile's
+  is asked to quit first, so a cookie set just before the close is on disk),
   Ctrl-C included; a second Ctrl-C kills it at once.
 - **Only Wealthfront's cookies are read.** Pages count only on exactly
   `www.wealthfront.com` over `https`. The stored session is the cookies the
@@ -94,8 +95,7 @@ So:
   second Ctrl-C kills Chrome with no such message. A launch refused before
   Chrome uses it (no Chrome, a profile in use or needing repair) says nothing
   about it, since `auth logout` would refuse the same profile. `wfr auth status`
-  does not report it: cli-common v0.16.0 has no call that says whether a profile
-  exists.
+  reports whether one is kept, not whether it is signed in.
 - A session cookie left in it from an earlier sign-in is not trusted alone: only
   a `GET /capitan/v1/me` that answers a non-empty account object accepts a
   session, so an unverified session cannot replace a working one.
@@ -124,8 +124,10 @@ A service it names is a test namespace, and must not read or change the real
 kept browser profile or the real config. While it names one, `wfr auth logout`
 clears that service, leaves the real profile in place and says so, `wfr auth
 login --browser` uses a scratch profile, as with `--fresh-profile`, and says so
-in one line on stderr, and `auth logout --forget` leaves the real config and
-says so. A `--config` you name is still cleared. A blank value names no service.
+in one line on stderr, `auth logout --forget` leaves the real config and says
+so, and `wfr auth status` reads nothing about the real profile, leaves
+`browser_profile` out and says so. A `--config` you name is still cleared. A
+blank value names no service.
 
 ## App-specific password — not usable for wfr's own login
 

@@ -133,7 +133,7 @@ the session cookie too: use `--fresh-profile` there. See
 - A sign-in that fails once Chrome may have used the kept profile, Ctrl-C
   included, leaves it in place, possibly signed in, and its error says so. `wfr
   auth logout` removes it, and clears the stored session too. `wfr auth status`
-  does not report the profile.
+  says whether a profile is kept, not whether it is signed in.
 
 Wealthfront requires two-factor authentication on **every** account with no way
 to disable it. A login that needs a code parks its in-flight session in the
