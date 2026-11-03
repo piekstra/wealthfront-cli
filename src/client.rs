@@ -193,6 +193,9 @@ struct SessionSync {
 
 pub struct Wf {
     http: Client,
+    /// For a request with a password or a code in its body. reqwest re-sends a body on a 307 or
+    /// 308, so this client follows no redirect to another host. It shares `http`'s jar.
+    auth_http: Client,
     jar: Arc<Jar>,
     sync: Option<SessionSync>,
     base: String,
@@ -253,13 +256,17 @@ impl Wf {
     /// tests (the same pattern as sofi-cli's `with_base`).
     fn with_base(base: String) -> Result<Self, CliError> {
         let jar = Arc::new(Jar::default());
-        let http = pk_cli_http::builder("wfr", env!("CARGO_PKG_VERSION"))
-            .cookie_provider(jar.clone())
-            .timeout(Duration::from_secs(45))
-            .build()
-            .map_err(|e| CliError::Upstream(format!("building HTTP client: {e}")))?;
+        let client = |redirects| {
+            pk_cli_http::builder("wfr", env!("CARGO_PKG_VERSION"))
+                .cookie_provider(jar.clone())
+                .timeout(Duration::from_secs(45))
+                .redirect(redirects)
+                .build()
+                .map_err(|e| CliError::Upstream(format!("building HTTP client: {e}")))
+        };
         Ok(Wf {
-            http,
+            http: client(pk_cli_core::transport::secure_redirects())?,
+            auth_http: client(pk_cli_core::transport::same_host_redirects())?,
             jar,
             sync: None,
             base,
@@ -468,7 +475,7 @@ impl Wf {
 
     pub fn post_json(&self, path: &str, body: &Value) -> Result<Value, CliError> {
         let req = self
-            .http
+            .auth_http
             .post(self.url(path))
             .header("Accept", "application/json")
             .json(body);
@@ -535,7 +542,7 @@ impl Wf {
         }
         let bytes = resp
             .bytes()
-            .map_err(|e| CliError::Upstream(format!("reading document body: {e}")))?
+            .map_err(|e| CliError::Upstream(format!("reading document body: {}", e.without_url())))?
             .to_vec();
         if !status.is_success() {
             return Err(CliError::Upstream(format!(
@@ -572,7 +579,9 @@ impl Wf {
             .get(self.url(endpoints::LOGIN_PAGE))
             .header("Accept", "text/html")
             .send()
-            .map_err(|e| CliError::Upstream(format!("priming the login page: {e}")))?;
+            .map_err(|e| {
+                CliError::Upstream(format!("priming the login page: {}", e.without_url()))
+            })?;
         let login_xsrf = self.login_xsrf().ok_or_else(|| {
             CliError::Upstream(
                 "Wealthfront set no login_xsrf cookie on GET /login — the login handshake \
@@ -593,7 +602,7 @@ impl Wf {
             "browserInfo": {},
         });
         let resp = self
-            .http
+            .auth_http
             .post(self.url(endpoints::LOGIN))
             .header("Accept", "application/json")
             .header("Origin", self.base.clone())
@@ -601,9 +610,9 @@ impl Wf {
             .json(&body)
             .send()?;
         let status = resp.status();
-        let text = resp
-            .text()
-            .map_err(|e| CliError::Upstream(format!("reading login response: {e}")))?;
+        let text = resp.text().map_err(|e| {
+            CliError::Upstream(format!("reading login response: {}", e.without_url()))
+        })?;
         classify_login(status.as_u16(), &text)
     }
 
@@ -1251,6 +1260,32 @@ mod tests {
             .into_iter()
             .find(|req| req.starts_with("POST "))
             .expect("the login POST arrived")
+    }
+
+    /// reqwest re-sends a body on a 307 or 308, so the password stays on the host it was for.
+    #[test]
+    fn a_login_answered_with_a_307_to_another_host_sends_the_password_nowhere() {
+        let (base, handle) = crate::loopback::serve(2, move |req| {
+            if req.starts_with("GET /login") {
+                crate::loopback::response(
+                    "200 OK",
+                    &["Set-Cookie: login_xsrf=abc; Path=/; HttpOnly"],
+                    "<html>",
+                )
+            } else {
+                crate::loopback::response(
+                    "307 Temporary Redirect",
+                    &["Location: http://127.0.0.1:9/elsewhere"],
+                    "",
+                )
+            }
+        });
+        let wf = Wf::with_base(base).expect("client builds");
+        let err = wf
+            .login("probe@example.invalid", &Secret::new("dummy-pw"))
+            .unwrap_err();
+        assert!(err.to_string().contains("another host"), "{err}");
+        handle.join().expect("server thread");
     }
 
     #[test]

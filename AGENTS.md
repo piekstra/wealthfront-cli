@@ -6,7 +6,7 @@ Canonical guide for humans and agents. `CLAUDE.md` points here.
 
 A [piekstra CLI family](https://github.com/piekstra/cli-common) member
 (`piekstra-cli/1`) for Wealthfront. Rust, clap-derive, `pk-cli-*` crates pinned
-to tag **v0.20.0**. Binary is `wfr`; crate is `wealthfront-cli`.
+to tag **v0.27.0**. Binary is `wfr`; crate is `wealthfront-cli`.
 
 **Read-only.** Nothing here moves money or mutates the account. If that ever
 changes, the claim in README, SECURITY.md and this file must change in the

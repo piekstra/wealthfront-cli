@@ -1,5 +1,17 @@
 # Changelog
 
+## v0.3.4 — 2026-11-03
+
+Built on cli-common v0.27.0.
+
+- A password or a code stays on the host it was for. reqwest re-sends a body on a 307 or 308,
+  so the sign-in requests now refuse a redirect to another host, and other requests refuse one
+  that leaves https.
+- A network failure names only the origin, not the whole URL, which can hold an account id.
+- On Windows, a session too long for one credential no longer fails at the end of a sign-in.
+- `wealthfront_activity` and `wealthfront_documents` page by position, so a row that arrives
+  between pages repeats nothing. Rows of the same day now run in a fixed order of their own.
+
 ## v0.3.3 — 2026-11-03
 
 Built on cli-common v0.20.0.
