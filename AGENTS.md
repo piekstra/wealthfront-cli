@@ -6,7 +6,7 @@ Canonical guide for humans and agents. `CLAUDE.md` points here.
 
 A [piekstra CLI family](https://github.com/piekstra/cli-common) member
 (`piekstra-cli/1`) for Wealthfront. Rust, clap-derive, `pk-cli-*` crates pinned
-to tag **v0.19.0**. Binary is `wfr`; crate is `wealthfront-cli`.
+to tag **v0.20.0**. Binary is `wfr`; crate is `wealthfront-cli`.
 
 **Read-only.** Nothing here moves money or mutates the account. If that ever
 changes, the claim in README, SECURITY.md and this file must change in the
@@ -150,10 +150,10 @@ opens the file; `api` parses the method before building a client.
 magic number. Logins require a positive signal, and *rejection is checked
 first* — a rejected login often renders an MFA-shaped page, and testing for
 the code prompt first makes the CLI ask for a code nobody sent.
-`GET /capitan/v1/me` counts as signed in only when it answers a non-empty JSON
-object (`Wf::me`). A 200 that is empty, `null`, `{}` or any other JSON value is
-an upstream error (exit 5), for the browser confirm, the password login and
-`auth status --verify` alike: a visitor's answer is a 401, not an empty 200.
+`GET /capitan/v1/me` counts as signed in only when `emailAddress` or
+`userIdExternalized` holds a non-empty string (`Wf::read_me`): the field's value, not
+its presence. Any other 200 is an upstream error (exit 5) for the password login and
+`auth status --verify`, and the browser confirm answers `NotYet` or `Undecided`.
 
 **Records that fail to map are counted on stderr** (`note_dropped`). An
 unrecognized *envelope* is a hard error, never an empty list — "no accounts"
@@ -218,12 +218,13 @@ that records each request. Point the client at it with an explicit base
 `Captured::for_test` (the `test-util` feature) builds the capture the crate
 would hand over, and `confirm_session_with` takes the client that makes the
 `/capitan/v1/me` read, so each `Confirm` outcome is pinned against the loopback
-server: no jar fails before any read, a non-empty JSON object is `Ready` and the
-read sends the jar with `x-csrf-token`, a refused answer is `NotYet` with the refusal's own text,
-which names a 403 HTML page as a possible bot check, and anything else (an empty
-body, `{}` or `null` 200 included) ends the wait as exit 5. The edge block is a
-typed `ReadError`, never matched on its wording, and only a page's `<title>` can
-call a 200 a challenge.
+server: no jar fails before any read, an answer showing an account is `Ready` and
+the read sends the jar with `x-csrf-token`, a refused answer or one with no account
+is `NotYet`, and a read that can't decide (`pk_cli_http::inconclusive`, no answer, an
+edge block's page, a 200 that is empty or not JSON) is `Undecided` with the provider's
+`Retry-After`. A 404 and a client that can't be built end the wait as exit 5.
+`ReadError` types each kind of answer, so nothing matches on wording, a reason holds
+fixed parts only, and only a page's `<title>` can call a 200 a challenge.
 
 **The logout's browser step is tested on a temp dir.** `run_logout` takes the
 removal as a closure; its tests fill it with `forget_profile_in` (the same

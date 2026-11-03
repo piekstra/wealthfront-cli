@@ -33,7 +33,7 @@ token, and config identity.
 ## Browser sign-in
 
 `wfr auth login --browser` runs cli-common's `pk-cli-browser` ([cli-common
-DESIGN.md §2.2](https://github.com/piekstra/cli-common/blob/v0.19.0/DESIGN.md)).
+DESIGN.md §2.2](https://github.com/piekstra/cli-common/blob/v0.20.0/DESIGN.md)).
 You type the password and the 2FA code on Wealthfront's own page in a Chrome
 window; they never pass through `wfr`. While the window is open:
 
@@ -96,9 +96,12 @@ So:
   Chrome uses it (no Chrome, a profile in use or needing repair) says nothing
   about it, since `auth logout` would refuse the same profile. `wfr auth status`
   reports whether one is kept, not whether it is signed in.
-- A session cookie left in it from an earlier sign-in is not trusted alone: only
-  a `GET /capitan/v1/me` that answers a non-empty account object accepts a
-  session, so an unverified session cannot replace a working one.
+- A session cookie left in it from an earlier sign-in is not trusted alone: only a `GET /capitan/v1/me` whose answer shows an account accepts a session, so an
+  unverified session is never stored, and a 2xx alone does not accept one. A read
+  that can't decide (a 429, a 5xx, no answer, an edge block's page, a 200 that is
+  empty or not JSON) keeps the tab and the jar, and the crate asks again after a
+  backoff, since the cookies do not survive the stop. Ctrl-C ends it. A wait that
+  runs out on it is exit 5 and stores nothing.
 - `--fresh-profile` runs one sign-in in a scratch profile instead, created
   `0700`, exclusively (an existing path is refused, never adopted), under an
   unpredictable name in the temp dir, and removed when the window closes. One
