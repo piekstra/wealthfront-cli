@@ -134,6 +134,19 @@ fn browser_login_refuses_another_credential_source_before_anything_runs() {
     std::fs::remove_dir_all(&dir).unwrap();
 }
 
+/// No login path reads `--no-verify`, so `--help` does not offer it. It still
+/// parses: `browser_login_takes_no_other_credential_source`. `--overwrite` has an
+/// effect here, so it stays.
+#[test]
+fn login_help_hides_the_flag_with_no_effect() {
+    wfr()
+        .args(["auth", "login", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--no-verify").not())
+        .stdout(predicate::str::contains("--overwrite"));
+}
+
 #[test]
 fn auth_login_documents_the_browser_flag() {
     // The family's `--browser` (pk_cli_browser::BrowserArgs), with its

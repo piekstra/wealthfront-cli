@@ -61,17 +61,24 @@ use crate::keychain::{
 /// before anything reads the keychain or the network or opens Chrome
 /// (cli-common DESIGN.md §2.2).
 #[derive(clap::Args, Debug)]
-#[command(mut_arg("browser", |a| {
-    a.conflicts_with_all([
-        "stdin",
-        "from_env",
-        "code",
-        "no_verify",
-        "overwrite",
-        "non_interactive",
-        "channel",
-    ])
-}))]
+///
+/// The shared `LoginArgs` brings `--no-verify`, which no login path here reads, so
+/// `--help` does not offer it. It still parses, so a script that passes it does not
+/// break.
+#[command(
+    mut_arg("browser", |a| {
+        a.conflicts_with_all([
+            "stdin",
+            "from_env",
+            "code",
+            "no_verify",
+            "overwrite",
+            "non_interactive",
+            "channel",
+        ])
+    }),
+    mut_arg("no_verify", |a| a.hide(true))
+)]
 pub struct PortalLoginArgs {
     #[command(flatten)]
     pub base: LoginArgs,
@@ -397,9 +404,11 @@ fn me_verdict(me: Result<Value, CliError>) -> Confirm {
     match me {
         // The account object, the only answer `Wf::me` lets through.
         Ok(_) => Confirm::Ready,
-        // The answer a visitor gets: the owner has not finished signing in.
-        Err(CliError::Auth(_)) => {
-            Confirm::NotYet(format!("GET {} answered as signed out", endpoints::ME))
+        // The owner may not have finished signing in, or a bot check may be in the
+        // way. A timeout gives what the read was told: the client's own wording,
+        // which holds a status and never a cookie value or the answer's body.
+        Err(CliError::Auth(why)) => {
+            Confirm::NotYet(format!("GET {} was refused: {why}", endpoints::ME))
         }
         // A 429, a 200 that is not the account object, the network, a
         // cookie or CSRF bug: waiting will not fix it, so it ends the wait
@@ -1332,14 +1341,44 @@ mod tests {
                 }
             });
             match verdict {
-                Confirm::NotYet(reason) => assert_eq!(
-                    reason, "GET /capitan/v1/me answered as signed out",
-                    "{case}"
-                ),
+                Confirm::NotYet(reason) => {
+                    assert!(
+                        reason.starts_with("GET /capitan/v1/me was refused: "),
+                        "{case}: {reason}"
+                    )
+                }
                 other => panic!("{case} must keep waiting: {other:?}"),
             }
             assert_eq!(requests.len(), connections, "{case}");
             assert_me_read(&requests[0], case);
+        }
+    }
+
+    /// An edge block during a sign-in reads as a possible bot check, not as a dead
+    /// session, so the timeout tells the owner not to retry into it. The reason
+    /// holds neither the answer's body nor a cookie value.
+    #[test]
+    fn a_403_html_answer_reaches_not_yet_as_a_possible_bot_check() {
+        const PAGE: &str = "<!DOCTYPE html><html><title>Just a moment...</title>dummy-body</html>";
+        for (case, status, page) in [
+            ("a 403 challenge", "403 Forbidden", PAGE),
+            (
+                "a bare 403 page",
+                "403 Forbidden",
+                "<html>dummy-body</html>",
+            ),
+            ("a 200 challenge", "200 OK", PAGE),
+        ] {
+            let (verdict, _) = confirm_against(1, move |_| {
+                loopback::response(status, &["Content-Type: text/html"], page)
+            });
+            let Confirm::NotYet(reason) = verdict else {
+                panic!("{case} must keep waiting: {verdict:?}");
+            };
+            assert!(reason.contains("possibly a bot check"), "{case}: {reason}");
+            assert!(!reason.contains("session expired"), "{case}: {reason}");
+            // The page's marker and every cookie value in `captured_jar` are dummies.
+            assert!(!reason.contains("dummy"), "{case}: {reason}");
         }
     }
 
@@ -1509,7 +1548,7 @@ mod tests {
 
         match me_verdict(Err(CliError::Auth("session expired".into()))) {
             Confirm::NotYet(reason) => {
-                assert_eq!(reason, "GET /capitan/v1/me answered as signed out");
+                assert_eq!(reason, "GET /capitan/v1/me was refused: session expired");
             }
             other => panic!("an auth error must keep waiting: {other:?}"),
         }

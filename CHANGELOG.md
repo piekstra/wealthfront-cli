@@ -1,5 +1,18 @@
 # Changelog
 
+## v0.3.3 — 2026-11-03
+
+- A `wfr auth login --browser` that times out now says what `GET /capitan/v1/me`
+  was told, where it used to say only "answered as signed out". A 403 no longer
+  always reads as an expired session: an HTML page, or a challenge's page behind a
+  200, names itself as a possible bot check or edge block and says to wait, since
+  a sign-in now may hit the same block. Any other 403 names both causes. Reads
+  outside a sign-in use the same wording. Exit codes are unchanged. The text holds
+  a status, never a cookie value or the page.
+- `wfr auth login --help` no longer offers `--no-verify`, which no login path
+  reads. It still parses without `--browser`, so a script that passes it does not
+  break.
+
 ## v0.3.2 — 2026-11-03
 
 `wfr auth login --browser` now refuses every login flag it does not read, with

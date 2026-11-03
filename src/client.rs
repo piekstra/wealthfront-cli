@@ -501,8 +501,11 @@ impl Wf {
         if is_login_url(&final_url) {
             return Err(expired());
         }
-        if matches!(status.as_u16(), 401 | 403) {
+        if status.as_u16() == 401 {
             return Err(expired());
+        }
+        if status.as_u16() == 403 {
+            return Err(refused(&resp.text().unwrap_or_default()));
         }
         if status.as_u16() == 404 {
             return Err(CliError::NotFound(format!("{path} (HTTP 404)")));
@@ -631,8 +634,11 @@ impl Wf {
         if is_login_url(&final_url) {
             return Err(expired());
         }
-        if matches!(status.as_u16(), 401 | 403) {
+        if status.as_u16() == 401 {
             return Err(expired());
+        }
+        if status.as_u16() == 403 {
+            return Err(refused(&resp.text().unwrap_or_default()));
         }
         if status.as_u16() == 404 {
             return Err(CliError::NotFound(format!("{path} (HTTP 404)")));
@@ -708,6 +714,47 @@ fn expired() -> CliError {
     CliError::Auth("Wealthfront session expired or invalid — run `wfr auth login`".into())
 }
 
+/// A 403: exit 3, as any refusal is. An HTML page is an edge's answer, so it reads
+/// as a possible bot check; otherwise it could be either.
+fn refused(body: &str) -> CliError {
+    if body.trim_start().starts_with('<') {
+        return edge_block(403);
+    }
+    CliError::Auth(
+        "Wealthfront refused the request (HTTP 403): the session may be invalid, or this may be \
+         a bot check or edge block. If a sign-in just met this, wait before trying again, \
+         since a retry now may hit the same block; otherwise run `wfr auth login \
+             --browser`"
+            .into(),
+    )
+}
+
+/// An HTML page from the edge where data was expected: a possible bot check, which
+/// a fresh sign-in may run straight into. Exit 3, as any refusal is, but not worded
+/// as an expired session. It names the status only, never the page.
+fn edge_block(status: u16) -> CliError {
+    CliError::Auth(format!(
+        "Wealthfront answered with an HTML page (HTTP {status}): possibly a bot check or edge \
+         block, not an expired session. Wait before signing in again, since a retry now may \
+         hit the same block; then run `wfr auth login --browser`"
+    ))
+}
+
+/// Whether an HTML page reads as a bot check or an edge block rather than a login
+/// page: a challenge's own wording, in the head of the page. Not a login page's
+/// reCAPTCHA or Turnstile, which every sign-in shows.
+fn html_reads_as_edge_block(text: &str) -> bool {
+    let head = String::from_utf8_lossy(&text.as_bytes()[..text.len().min(8192)]).to_lowercase();
+    [
+        "just a moment",
+        "attention required",
+        "cf-chl",
+        "access denied",
+    ]
+    .iter()
+    .any(|marker| head.contains(marker))
+}
+
 /// What a JSON value is, for an error that must name the shape it got but
 /// never its content. [`parse_json`] reads an empty body as `null`.
 fn json_kind(v: &Value) -> &'static str {
@@ -728,7 +775,9 @@ fn parse_json(text: &str, path: &str) -> Result<Value, CliError> {
         return Ok(Value::Null);
     }
     serde_json::from_str(text).map_err(|_| {
-        if text.trim_start().starts_with('<') {
+        if text.trim_start().starts_with('<') && html_reads_as_edge_block(text) {
+            edge_block(200)
+        } else if text.trim_start().starts_with('<') {
             CliError::Auth(
                 "Wealthfront returned HTML where JSON was expected (session expired) — \
                  run `wfr auth login`"

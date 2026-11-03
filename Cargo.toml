@@ -1,6 +1,6 @@
 [package]
 name = "wealthfront-cli"
-version = "0.3.2"
+version = "0.3.3"
 edition = "2021"
 rust-version = "1.89"
 description = "Read Wealthfront accounts, activity, and documents from the command line, plus an offline importer for the activity CSV export. Keychain-secured, agent-friendly."
