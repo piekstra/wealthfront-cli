@@ -131,6 +131,41 @@ fn auth_login_documents_the_browser_flag() {
         ));
 }
 
+/// `--fresh-profile` picks the profile a browser sign-in runs in, so alone it
+/// would do nothing: a usage error, before anything reads the keychain or the
+/// network.
+#[test]
+fn fresh_profile_requires_the_browser_flag() {
+    wfr()
+        .args(["auth", "login", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--fresh-profile"));
+    wfr()
+        .args(["auth", "login", "--fresh-profile"])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("--browser"));
+}
+
+/// The summary `auth --help` lists stays one line; the detail of a logout that
+/// cannot finish is in `auth logout --help`.
+#[test]
+fn logout_help_keeps_the_refusal_detail_out_of_the_summary() {
+    wfr()
+        .args(["auth", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--forget also"))
+        .stdout(predicate::str::contains("still cleared").not());
+    wfr()
+        .args(["auth", "logout", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Every step is attempted"))
+        .stdout(predicate::str::contains("the rest is still cleared"));
+}
+
 /// A loopback stand-in for www.wealthfront.com serving the two login-flow
 /// requests: `GET /login` (sets the `login_xsrf` cookie) and the login POST
 /// (answered with `body`). Std only — no mock library (AGENTS.md).
@@ -635,6 +670,36 @@ fn transactions_list_validates_the_range_before_the_network() {
         .args(["--json", "transactions", "list", "--since", "nope"])
         .assert()
         .code(2);
+}
+
+/// A config file that can't be parsed stops nothing in a logout, and `--forget`
+/// clears it. It runs the real logout, so it needs the keychain surface: an
+/// empty named service and a temp `HOME`, so it never reaches the real profile.
+/// Run it deliberately with `WFR_TEST_KEYCHAIN=1 cargo test`.
+#[test]
+fn logout_forget_runs_with_a_config_that_cannot_be_parsed() {
+    if std::env::var("WFR_TEST_KEYCHAIN").as_deref() != Ok("1") {
+        return;
+    }
+    let dir = std::env::temp_dir().join(format!("wfr-corrupt-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let config = dir.join("config.json");
+    std::fs::write(&config, "{ not json").unwrap();
+    wfr()
+        .env("HOME", &dir)
+        .env("WFR_KEYCHAIN_SERVICE", "piekstra.wfr-test-empty")
+        .arg("--config")
+        .arg(&config)
+        .args(["auth", "logout", "--forget"])
+        .assert()
+        .success();
+    if let Ok(body) = std::fs::read_to_string(&config) {
+        assert!(
+            serde_json::from_str::<serde_json::Value>(&body).is_ok(),
+            "{body}"
+        );
+    }
+    std::fs::remove_dir_all(&dir).unwrap();
 }
 
 /// Opt-in: `auth status` reads keychain items, and `cargo test` rebuilds an

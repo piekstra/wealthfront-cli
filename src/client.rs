@@ -434,7 +434,7 @@ impl Wf {
     /// success.
     pub fn me(&self) -> Result<Value, CliError> {
         match self.get_json(endpoints::ME)? {
-            me @ Value::Object(_) => Ok(me),
+            Value::Object(fields) if !fields.is_empty() => Ok(Value::Object(fields)),
             other => Err(CliError::Upstream(format!(
                 "Wealthfront answered {} with {} where the account object was expected",
                 endpoints::ME,
@@ -717,6 +717,7 @@ fn json_kind(v: &Value) -> &'static str {
         Value::Number(_) => "a number",
         Value::String(_) => "a string",
         Value::Array(_) => "an array",
+        Value::Object(fields) if fields.is_empty() => "an empty object",
         Value::Object(_) => "an object",
     }
 }
@@ -1148,6 +1149,7 @@ mod tests {
         for (body, kind) in [
             ("", "an empty body or null"),
             ("null", "an empty body or null"),
+            ("{}", "an empty object"),
             ("[]", "an array"),
             (r#""dummy""#, "a string"),
             ("true", "a boolean"),

@@ -494,14 +494,14 @@ sum. It introduces no new endpoint:
 **Status.** The flow was VERIFIED-LIVE on 2026-08-18 with a Chrome capture
 embedded in this repo. It now runs on cli-common's shared `pk-cli-browser`
 crate
-([cli-common DESIGN.md §2.2](https://github.com/piekstra/cli-common/blob/v0.15.1/DESIGN.md)),
+([cli-common DESIGN.md §2.2](https://github.com/piekstra/cli-common/blob/v0.16.0/DESIGN.md)),
 which makes the same reads and stores the same session. That build is
 UNVERIFIED-LIVE until the owner's next sign-in through it.
 
 The owner signs in on Wealthfront's own page in a plain Chrome window. The
-window has a debug port and a scratch profile, and none of the automation
-flags reCAPTCHA scores (§3.2). The CLI reads the session out of the window
-over the Chrome DevTools Protocol. It never evaluates anything in a page:
+window has a debug port and the profile `wfr` keeps (below), and none of the
+automation flags reCAPTCHA scores (§3.2). The CLI reads the session out of the
+window over the Chrome DevTools Protocol. It never evaluates anything in a page:
 the page list and the cookies are browser-level reads.
 
 | Step | What `browser_capture` (`src/commands/auth.rs`) does |
@@ -510,7 +510,7 @@ the page list and the cookies are browser-level reads.
 | Host | pages on exactly `www.wealthfront.com` (`https`, default port), parsed and compared label for label. The apex, other wealthfront.com hosts and look-alikes are never read or closed. |
 | Gate | the `_wfsid` cookie, as the browser would send it to `https://www.wealthfront.com/` |
 | The session | every cookie the browser would send to `wealthfront.com` or a host under it, `HttpOnly` included, as one `k=v; k=v` header: the jar §3.4 needs |
-| Confirm | on each 3-second poll, once the gate passes and before the tab closes, one `GET /capitan/v1/me` with that jar. A JSON object closes the tab and hands the jar over. A signed-out answer (401, 403, a redirect to the sign-in or 2FA page, or HTML where JSON was expected) keeps waiting. Anything else ends the login as exit 5: 404, 429, 5xx, a 200 that is empty, `null`, not JSON or JSON other than an object (no signed-out answer has that shape; a visitor gets 401), the network, a cookie or CSRF bug, `session validation failed during the browser login: …`. |
+| Confirm | on each 3-second poll, once the gate passes and before the tab closes, one `GET /capitan/v1/me` with that jar. A non-empty JSON object closes the tab and hands the jar over. A signed-out answer (401, 403, a redirect to the sign-in or 2FA page, or HTML where JSON was expected) keeps waiting. Anything else ends the login as exit 5: 404, 429, 5xx, a 200 that is empty, `null`, not JSON or JSON other than an object (no signed-out answer has that shape; a visitor gets 401), the network, a cookie or CSRF bug, `session validation failed during the browser login: …`. |
 | Stored | the confirmed jar, unchanged, under keychain `piekstra.wfr/session`: the bundle the password login stores and every read seeds from |
 
 Each Confirm outcome is tested offline. The unit tests in
@@ -519,11 +519,24 @@ constructors and answer the `/capitan/v1/me` read from a loopback server
 (`src/loopback.rs`). They also check that the read sends the jar and the
 decoded `x-csrf-token`.
 
-The crate stops Chrome and deletes the profile on every exit. The profile is
-`0700`, created exclusively under an unpredictable name in the temp dir.
+The crate stops Chrome on every exit. The profile stays on disk at `<data
+dir>/piekstra.wfr/browser-profile`, `0700`, and is refused when it is a symlink,
+another user's or any other mode. Wealthfront's own cookies carry over, so a
+later sign-in should need less input. **UNVERIFIED-LIVE:** no second sign-in has
+run in a kept profile yet, so how far Wealthfront lets one go (and whether its
+2FA prompt still appears) is unknown. `--fresh-profile` runs one sign-in in a
+scratch profile instead: `0700`, created exclusively under an unpredictable name
+in the temp dir, and deleted on exit. `wfr auth logout` removes the kept profile
+as its last step. It is a full Chrome profile: SECURITY.md lists what it holds.
+The capture reads cookies only, never `localStorage`, and a jar left from an
+earlier sign-in passes only if `GET /capitan/v1/me` still accepts it, so a stale
+session keeps the wait going until the owner signs in. A sign-in that fails once
+Chrome may have used the kept profile, whatever its exit code, ends by saying
+the profile stays on disk and `wfr auth logout` removes it, and clears the
+stored session too. A launch refused before that says nothing about it.
 `WFR_CHROME` points at a Chrome binary. Without it, the crate looks in the
-standard macOS paths (Chrome, Chromium, Edge, also under `~/Applications`),
-then the Linux ones.
+standard macOS paths (Chrome, Chromium, Edge, also under `~/Applications`), then
+the Linux ones.
 
 On stderr, unless `-q`:
 
@@ -536,10 +549,11 @@ logged in — session captured from the browser
 | Outcome | Exit |
 |---|---|
 | Signed in and confirmed | 0 |
-| 10 minutes pass, or the window is closed first. The message names what was seen (no `www.wealthfront.com` page open, `_wfsid` not set, or `GET /capitan/v1/me answered as signed out`, with the jar's cookie names, never values) and ends ``Re-run `wfr auth login --browser` and finish signing in.`` | 3 |
+| 10 minutes pass, or the window is closed first. The message names what was seen (no `www.wealthfront.com` page open, `_wfsid` not set, or `GET /capitan/v1/me answered as signed out`, with the jar's cookie names, never values) and says ``Re-run `wfr auth login --browser` and finish signing in.`` In a kept profile it ends with the note below | 3 |
 | The confirm read failed for a reason other than sign-in | 5 |
 | Ctrl-C (`browser login canceled`), no Chrome found, or Chrome failed to start | 1 |
-| A second Ctrl-C, when the first did not end the wait: Chrome is killed and the profile deleted | 130 |
+| The kept profile is in use (another sign-in, or a Chrome still running in it) or needs repair (a symlink, another user's, not `0700`). The message names the path and what to do. `wfr auth logout` refuses the same way, after attempting every other step, and its error says what was cleared and what remains | 1 |
+| A second Ctrl-C, when the first did not end the wait: Chrome is killed, and a scratch profile deleted | 130 |
 
 **The surface around it.** `--browser` takes no other credential source: with
 `--stdin` or `--from-env` it is exit 2 from clap, before anything reads the

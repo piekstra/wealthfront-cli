@@ -6,7 +6,7 @@ Canonical guide for humans and agents. `CLAUDE.md` points here.
 
 A [piekstra CLI family](https://github.com/piekstra/cli-common) member
 (`piekstra-cli/1`) for Wealthfront. Rust, clap-derive, `pk-cli-*` crates pinned
-to tag **v0.15.1**. Binary is `wfr`; crate is `wealthfront-cli`.
+to tag **v0.16.0**. Binary is `wfr`; crate is `wealthfront-cli`.
 
 **Read-only.** Nothing here moves money or mutates the account. If that ever
 changes, the claim in README, SECURITY.md and this file must change in the
@@ -30,7 +30,8 @@ The surface is split, and the split is not cosmetic:
   reCAPTCHA-safe), the owner signs in, and the CLI reads the wealthfront.com
   jar, confirms it with `GET /capitan/v1/me` before the tab closes, and stores
   it (`docs/api.md` §3.6). VERIFIED-LIVE with the embedded capture it replaced;
-  the shared-crate build awaits the owner's next sign-in. **`wfr auth login` (bare HTTP) also reaches credential validation
+  the shared-crate build awaits the owner's next sign-in. The window runs in a
+  Chrome profile `wfr` keeps on disk (see "The kept browser profile"). **`wfr auth login` (bare HTTP) also reaches credential validation
   + 2FA as of 2026-08-31** — the earlier "reCAPTCHA needs a browser" claim was
   wrong: a tokenless POST with the `login_xsrf` handshake reaches the login, and
   a wrong password now returns a credentials error, not a session error
@@ -82,7 +83,7 @@ unattended. Therefore:
 | Path | Role |
 |---|---|
 | `src/main.rs` | clap tree, dispatch, exit-code mapping |
-| `src/commands/auth.rs` | `auth login` (password + parked MFA, and `--browser`: the `pk-cli-browser` capture and its `/capitan/v1/me` confirm), `status`, `logout`, `set-credential` |
+| `src/commands/auth.rs` | `auth login` (password + parked MFA, and `--browser`: the `pk-cli-browser` capture and its `/capitan/v1/me` confirm), `status`, `logout` (keychain, then the kept browser profile), `set-credential` |
 | `src/client.rs` | HTTP, session (`x-csrf-token`), login `login_xsrf` handshake + MFA, `endpoints` — login **CAPTURED-LIVE & bare-HTTP-reachable** (2026-08-31), `me`/`accounts`/`activities`/`documents` reads all **VERIFIED-LIVE** |
 | `src/keychain.rs` | the four keychain account names and why each exists |
 | `src/config.rs` | non-secret settings |
@@ -108,6 +109,26 @@ delegates the rest. Don't fork these. The browser sign-in is
 If it ever needs something the crate cannot express, add it to cli-common
 rather than embedding DevTools code here again.
 
+**The kept browser profile.** `--browser` runs Chrome in `~/Library/Application
+Support/piekstra.wfr/browser-profile` on macOS
+(`$XDG_DATA_HOME/piekstra.wfr/browser-profile`, or under `~/.local/share`, on
+Linux), which stays on disk so Wealthfront's remembered device and session carry
+over and a later sign-in often needs no input. `--fresh-profile` runs one
+sign-in in a scratch profile and leaves the kept one alone. `auth logout`
+removes the kept profile as its last step, through `run_logout`, whose removal
+is a closure: the binary binds `forget_profile(BIN)`, tests bind
+`forget_profile_in(&temp_dir, BIN)`. A test never reaches the real profile. It
+is a full Chrome profile: history with full URLs, the HTTP cache and site
+storage sit outside Chrome's cookie encryption, and on Linux with no desktop
+keyring so does the session cookie (SECURITY.md). A failed sign-in leaves it.
+The whole sign-in runs inside `noting_kept_profile`, which adds the note to
+every failure except the refusals before Chrome uses the profile. Every logout
+step is attempted, and a failed logout's error says what was cleared and what
+remains. `auth status` does not report the profile: cli-common v0.16.0 has no
+call for it, and wfr must not work out the path itself. The capture reads no
+`localStorage`; keep it that way, or a stale token bundle in the kept profile
+becomes readable on page load.
+
 **One JSON document per invocation.** If a command already emitted its DTO and
 then needs a nonzero exit, `std::process::exit` directly — returning an error
 appends a second document. `auth status --verify` is the live example.
@@ -122,9 +143,9 @@ opens the file; `api` parses the method before building a client.
 magic number. Logins require a positive signal, and *rejection is checked
 first* — a rejected login often renders an MFA-shaped page, and testing for
 the code prompt first makes the CLI ask for a code nobody sent.
-`GET /capitan/v1/me` counts as signed in only when it answers a JSON object
-(`Wf::me`). A 200 that is empty, `null` or any other JSON value is an upstream
-error (exit 5), for the browser confirm, the password login and
+`GET /capitan/v1/me` counts as signed in only when it answers a non-empty JSON
+object (`Wf::me`). A 200 that is empty, `null`, `{}` or any other JSON value is
+an upstream error (exit 5), for the browser confirm, the password login and
 `auth status --verify` alike: a visitor's answer is a 401, not an empty 200.
 
 **Records that fail to map are counted on stderr** (`note_dropped`). An
@@ -190,9 +211,14 @@ that records each request. Point the client at it with an explicit base
 `Captured::for_test` (the `test-util` feature) builds the capture the crate
 would hand over, and `confirm_session_with` takes the client that makes the
 `/capitan/v1/me` read, so each `Confirm` outcome is pinned against the loopback
-server: no jar fails before any read, a JSON object is `Ready` and the read
-sends the jar with `x-csrf-token`, a signed-out answer is `NotYet`, and
-anything else (an empty or `null` 200 included) ends the wait as exit 5.
+server: no jar fails before any read, a non-empty JSON object is `Ready` and the
+read sends the jar with `x-csrf-token`, a signed-out answer is `NotYet`, and
+anything else (an empty body, `{}` or `null` 200 included) ends the wait as exit
+5.
+
+**The logout's browser step is tested on a temp dir.** `run_logout` takes
+the removal as a closure; its tests fill it with `forget_profile_in` (the same
+feature) or a canned refusal, so no test can remove the owner's real profile.
 
 ## Fixtures and privacy
 
@@ -238,7 +264,8 @@ and `bare_piped_stdin_without_flags_is_headless_too`.
 ## CI
 
 Linux only, on purpose. The suite is entirely offline, so a macOS runner would
-cost ~10x and exercise nothing extra. Releases are cut by pushing a `v*` tag
+cost ~10x and exercise nothing extra. Bump `Cargo.toml`, `Cargo.lock` and `packaging/mcpb/manifest.json` together and
+add a `CHANGELOG.md` section. Releases are cut by pushing a `v*` tag
 whose version matches `Cargo.toml` and `packaging/mcpb/manifest.json`
 (`.github/workflows/release.yml` refuses a mismatch). They build both Apple
 targets, `x86_64-unknown-linux-gnu` and `x86_64-pc-windows-msvc` as
@@ -263,10 +290,15 @@ commit.
 `--json` and human output in sync, `docs/api.md` matching reality including its
 honesty labels, and no personal data anywhere in the diff.
 
-For the MCP tools, drive the installed `wfr mcp` over stdio with JSON-RPC
-lines (`initialize`, `tools/list`, `tools/call`); `wfr mcp --list-tools`
-prints the definitions without a credential. To see the sign-in error
-without opening the real session, set `WFR_KEYCHAIN_SERVICE` to a service
-that holds nothing: a missing keychain item is read without a prompt and
-fails as "not logged in". The variable only renames which entry is read; it
-never carries a session.
+For the MCP tools, drive the installed `wfr mcp` over stdio with JSON-RPC lines
+(`initialize`, `tools/list`, `tools/call`); `wfr mcp --list-tools` prints the
+definitions without a credential. To see the sign-in error without opening the
+real session, set `WFR_KEYCHAIN_SERVICE` to a service that holds nothing: a
+missing keychain item is read without a prompt and fails as "not logged in". The
+variable only renames which entry is read; it never carries a session. A service
+it names is a test namespace that must not read or change the real kept browser
+profile or config: `wfr auth logout` skips the removal and says so, `wfr auth
+login --browser` takes a scratch profile and says so (`scratch_profile_choice`),
+and `--forget` leaves the real config unless `--config` names a file
+(`keeps_real_config`). The config is loaded only in the commands that use it, so
+logout runs on a file that can't be parsed.

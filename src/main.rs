@@ -248,6 +248,7 @@ fn run(cli: &Cli, matches: &clap::ArgMatches) -> Result<(), CliError> {
                 cli.common.json,
                 cli.common.quiet,
                 cli.common.interactive(),
+                keychain::keeps_real_config(cli.config.is_some()),
             )
         }
         _ => {}

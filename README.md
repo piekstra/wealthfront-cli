@@ -98,13 +98,42 @@ wfr documents download <ID> -o ~/Documents/   # VERIFIED-LIVE: writes the docume
 wfr api GET /capitan/v1/accounts     # real API base (needs a live session)
 ```
 
-`--browser` opens Chrome at the Wealthfront login with a throwaway profile and
-waits up to 10 minutes while you sign in; Ctrl-C cancels. Once
-`GET /capitan/v1/me` accepts the window's wealthfront.com cookies, the tab
-closes, Chrome quits, its profile is deleted, and the cookies are stored as the
-keychain `session`. Set `WFR_CHROME` to a Chrome binary outside the standard
-install paths. The mechanism is cli-common's `pk-cli-browser`
+`--browser` opens Chrome at the Wealthfront login and waits up to 10 minutes
+while you sign in; Ctrl-C cancels. Once `GET /capitan/v1/me` accepts the window's
+wealthfront.com cookies, the tab closes, Chrome quits, and the cookies are stored
+as the keychain `session`. Set `WFR_CHROME` to a Chrome binary outside the
+standard install paths. The mechanism is cli-common's `pk-cli-browser`
 ([`docs/api.md`](docs/api.md) §3.6).
+
+**The profile is kept.** Chrome runs in a profile `wfr` keeps on disk, owner-only
+(`0700`), at `~/Library/Application Support/piekstra.wfr/browser-profile` on
+macOS and `$XDG_DATA_HOME/piekstra.wfr/browser-profile` (or under
+`~/.local/share`) on Linux. Wealthfront's own cookies stay there between
+sign-ins, so a later `--browser` asks for less, often nothing: the window opens,
+the app loads signed in, the session is read and the window closes. On Windows
+every sign-in uses a scratch profile.
+
+That is a trade: far fewer sign-ins, for a full Chrome profile on disk. Besides
+Wealthfront's cookies, it holds browsing history with full URLs including query
+strings, the HTTP cache and site storage. Chrome's cookie encryption does not
+cover those, so `0700` is their only protection, and the directory is one
+ordinary backups usually include. On Linux with no desktop keyring, Chrome
+encrypts cookies with a fixed, publicly known key, so `0700` is all that protects
+the session cookie too: use `--fresh-profile` there. See
+[SECURITY.md](SECURITY.md).
+
+- `wfr auth login --browser --fresh-profile` signs in through a scratch profile
+  deleted afterwards, and leaves the kept one alone. Wealthfront sees a new
+  device, so expect its full sign-in.
+- `wfr auth logout` removes the kept profile too, so the next sign-in starts
+  signed out. Every step is attempted: if one fails, or a sign-in or a Chrome is
+  using the profile, the rest is still cleared, and the error says what was
+  cleared and what remains, with the first failure's exit code. Fix that and log
+  out again.
+- A sign-in that fails once Chrome may have used the kept profile, Ctrl-C
+  included, leaves it in place, possibly signed in, and its error says so. `wfr
+  auth logout` removes it, and clears the stored session too. `wfr auth status`
+  does not report the profile.
 
 Wealthfront requires two-factor authentication on **every** account with no way
 to disable it. A login that needs a code parks its in-flight session in the

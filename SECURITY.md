@@ -23,24 +23,25 @@ Secrets enter only via an interactive prompt, `--stdin`, or `--from-env <VAR>`
 written to a log. `--verbose` does not print secrets, cookies, or full account
 numbers.
 
-`wfr auth logout` clears the session and any parked login; `--forget` also
-removes the stored password, device token, and config identity.
+The one exception is the browser profile a `--browser` sign-in keeps (below),
+where Wealthfront's session cookies also sit.
+
+`wfr auth logout` clears the session and any parked login, and removes the kept
+browser profile (below); `--forget` also removes the stored password, device
+token, and config identity.
 
 ## Browser sign-in
 
 `wfr auth login --browser` runs cli-common's `pk-cli-browser`
-([cli-common DESIGN.md §2.2](https://github.com/piekstra/cli-common/blob/v0.15.1/DESIGN.md)).
+([cli-common DESIGN.md §2.2](https://github.com/piekstra/cli-common/blob/v0.16.0/DESIGN.md)).
 You type the password and the 2FA code on Wealthfront's own page in a Chrome
 window; they never pass through `wfr`. While the window is open:
 
 - **The debug port has no authentication.** Chrome is launched with a
   DevTools port, and anything that can reach `127.0.0.1:<port>` or read the
   profile's `DevToolsActivePort` file can read every cookie in the window. So
-  the profile is created `0700`, exclusively (an existing path is refused,
-  never adopted), under an unpredictable name in the temp dir. It is deleted
-  on every exit, Ctrl-C included; a second Ctrl-C kills Chrome and deletes it
-  at once. A profile that cannot be removed is reported on stderr even under
-  `-q`, since it may hold the session.
+  the profile is owner-only (below), and Chrome is stopped on every exit,
+  Ctrl-C included; a second Ctrl-C kills it at once.
 - **Only Wealthfront's cookies are read.** Pages count only on exactly
   `www.wealthfront.com` over `https`. The stored session is the cookies the
   browser would send to `wealthfront.com` or a host under it, matched label
@@ -52,6 +53,58 @@ window; they never pass through `wfr`. While the window is open:
 - **The session is never logged, put on a command line, or written to disk**
   outside Chrome's own profile. Messages name hosts and cookie names only. The
   session is stored only as the keychain `session` item.
+
+**The browser profile stays on disk between sign-ins**, so Wealthfront remembers
+the device. It lives at
+`~/Library/Application Support/piekstra.wfr/browser-profile` on macOS
+(`$XDG_DATA_HOME/piekstra.wfr/browser-profile`, or under `~/.local/share`, on
+Linux). It is a full Chrome profile, so it holds more than the session:
+
+- **Cookies**, Wealthfront's session among them. Chrome encrypts these at rest,
+  on macOS with the "Chrome Safe Storage" key in the login keychain and on Linux
+  with the desktop keyring. **On Linux with no desktop keyring it falls back to a
+  fixed, publicly known key**, so there the session cookie is effectively
+  unencrypted and `0700` is its only protection. Use `--fresh-profile` on such a
+  machine.
+- **Browsing history with full URLs including query strings, the HTTP cache and
+  site storage** (`localStorage`, IndexedDB). Chrome's cookie encryption does not
+  cover these, and the directory's `0700` mode is their only protection. The
+  cache can hold what Wealthfront's pages loaded during a sign-in.
+- **It sits where ordinary backups look.** Time Machine and home-directory
+  backups usually include this directory, so a copy can outlive the profile, and
+  `wfr auth logout` cannot reach a backup. Exclude the directory from backups, or
+  use `--fresh-profile`, if that matters to you.
+
+So:
+
+- The profile is created `0700`, and a launch is refused when it is a symlink,
+  is not your user's or is not `0700`.
+- One sign-in uses it at a time. A second, or a launch while a Chrome still runs
+  in it, is refused (exit 1).
+- `wfr auth logout` removes it, and refuses while it is in use or when it is a
+  symlink or another user's. Every step of a logout is attempted, so a refusal
+  or a failed keychain or config step leaves the rest done. The error says what
+  was cleared and what remains, names the path and says how to finish, with the
+  first failure's exit code. A logout does not parse the config, so a file that
+  can't be parsed stops nothing, and `--forget` removes it.
+- A sign-in that fails once Chrome may have used it leaves it in place, possibly
+  signed in: a timeout, a closed window, Ctrl-C, a confirm read that ends the
+  wait, a keychain write that fails after the capture. The error says so and
+  names `wfr auth logout`, which removes it and clears the stored session too. A
+  second Ctrl-C kills Chrome with no such message. A launch refused before
+  Chrome uses it (no Chrome, a profile in use or needing repair) says nothing
+  about it, since `auth logout` would refuse the same profile. `wfr auth status`
+  does not report it: cli-common v0.16.0 has no call that says whether a profile
+  exists.
+- A session cookie left in it from an earlier sign-in is not trusted alone: only
+  a `GET /capitan/v1/me` that answers a non-empty account object accepts a
+  session, so an unverified session cannot replace a working one.
+- `--fresh-profile` runs one sign-in in a scratch profile instead, created
+  `0700`, exclusively (an existing path is refused, never adopted), under an
+  unpredictable name in the temp dir, and removed when the window closes. One
+  that cannot be removed is reported on stderr even under `-q`, since it may
+  hold the session.
+- Windows has no kept profile: every sign-in there uses a scratch one.
 
 ## The MCP server
 
@@ -65,9 +118,14 @@ URL needs. The Claude Desktop extension (`.mcpb`) takes no settings and so
 holds no credential of its own; on macOS its bundled binary needs the user's
 approval, once, to read the `piekstra.wfr` keychain item.
 
-`WFR_KEYCHAIN_SERVICE` renames the keychain service read and written, for
-tests and for checking the error paths against an empty service. It carries
-no secret.
+`WFR_KEYCHAIN_SERVICE` renames the keychain service read and written, for tests
+and for checking the error paths against an empty service. It carries no secret.
+A service it names is a test namespace, and must not read or change the real
+kept browser profile or the real config. While it names one, `wfr auth logout`
+clears that service, leaves the real profile in place and says so, `wfr auth
+login --browser` uses a scratch profile, as with `--fresh-profile`, and says so
+in one line on stderr, and `auth logout --forget` leaves the real config and
+says so. A `--config` you name is still cleared. A blank value names no service.
 
 ## App-specific password — not usable for wfr's own login
 
