@@ -40,6 +40,7 @@
 //! session.
 
 use std::io::IsTerminal;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use pk_cli_auth::{AuthMethod, AuthStatus, LoginArgs, LogoutArgs, SetCredentialArgs};
 use pk_cli_browser::{
@@ -370,19 +371,47 @@ const SESSION_COOKIE: &str = "_wfsid";
 /// exactly [`WEB_HOST`] is open, [`SESSION_COOKIE`] is set and
 /// [`confirm_session`] accepts it. No page is evaluated in; the cookies are
 /// read at the browser level.
-fn browser_capture() -> Result<Capture, CliError> {
+fn browser_capture(quiet: bool) -> Result<Capture, CliError> {
     Ok(Capture::new("Wealthfront", HostRule::exact(WEB_HOST)?)
         .cookie(format!("https://{WEB_HOST}/"), SESSION_COOKIE)
         .cookie_jar(JAR_DOMAIN)
         .hint("password and 2FA")
-        .confirm(confirm_session))
+        .confirm({
+            // A capture serves one window, so the warning's once-only state lives here.
+            let warned = AtomicBool::new(false);
+            move |candidate| confirm_session(candidate, quiet, &warned)
+        }))
 }
 
 /// The check run on each poll before the tab closes: one `GET /capitan/v1/me`
 /// with the candidate jar, through the client every read uses. The request
 /// is bounded by that client's timeout.
-fn confirm_session(candidate: &Captured) -> Confirm {
-    confirm_session_with(candidate, Wf::from_bundle)
+fn confirm_session(candidate: &Captured, quiet: bool, warned: &AtomicBool) -> Confirm {
+    let answer = confirm_session_with(candidate, Wf::from_bundle);
+    if let Some(line) = edge_block_warning(warned, &answer, quiet) {
+        eprintln!("{line}");
+    }
+    answer
+}
+
+/// The line an edge block earns during a sign-in, so the owner need not wait out
+/// the timeout to learn of it. The first such answer in a window gets it, and later
+/// polls stay silent. Anything else stays silent too: a stale cookie in a kept profile
+/// answers a 401 or a plain 403 before the owner has signed in. `quiet` suppresses it.
+/// The answer stays `NotYet`, since the window can still clear.
+fn edge_block_warning(warned: &AtomicBool, answer: &Confirm, quiet: bool) -> Option<String> {
+    let Confirm::NotYet(reason) = answer else {
+        return None;
+    };
+    if quiet || !crate::client::names_an_edge_block(reason) || warned.swap(true, Ordering::Relaxed)
+    {
+        return None;
+    }
+    Some(format!(
+        "warning: Wealthfront's answer to this sign-in is {}. Press Ctrl-C rather than wait out \
+         the timeout, or keep waiting if it clears in the window.",
+        crate::client::EDGE_BLOCK
+    ))
 }
 
 /// [`confirm_session`], with the client that makes the read built by
@@ -428,7 +457,7 @@ fn browser_session(fresh_profile: bool, quiet: bool) -> Result<Secret, BrowserEr
         .url(format!("{BASE}{}", endpoints::LOGIN_PAGE))
         .fresh_profile(fresh_profile)
         .quiet(quiet);
-    let capture = browser_capture().map_err(BrowserError::Handler)?;
+    let capture = browser_capture(quiet).map_err(BrowserError::Handler)?;
     let captured = pk_cli_browser::capture(launch, &capture, DEFAULT_TIMEOUT)?;
     captured
         .cookie_header()
@@ -1274,7 +1303,7 @@ mod tests {
             .build();
         for (case, candidate) in [("a bare capture", &bare), ("a named _wfsid", &named_only)] {
             for verdict in [
-                confirm_session(candidate),
+                confirm_session(candidate, true, &AtomicBool::new(false)),
                 confirm_session_with(candidate, |_| panic!("{case}: no client without a jar")),
             ] {
                 match verdict {
@@ -1382,6 +1411,71 @@ mod tests {
         }
     }
 
+    /// The hook's answer to one read of `status` and `page`.
+    fn answer_to(status: &'static str, content_type: &'static str, page: &'static str) -> Confirm {
+        confirm_against(1, move |_| {
+            loopback::response(status, &[&format!("Content-Type: {content_type}")], page)
+        })
+        .0
+    }
+
+    /// An edge block warns once per window, whatever the polls after it answer.
+    #[test]
+    fn an_edge_block_warns_once_per_window() {
+        let warned = AtomicBool::new(false);
+        let block = || answer_to("403 Forbidden", "text/html", "<html></html>");
+        let first = edge_block_warning(&warned, &block(), false).expect("the first block warns");
+        assert!(
+            first.contains("possibly a bot check or edge block"),
+            "{first}"
+        );
+        assert!(first.contains("Ctrl-C"), "{first}");
+        assert_eq!(edge_block_warning(&warned, &block(), false), None);
+        assert_eq!(edge_block_warning(&warned, &block(), false), None);
+
+        // Another window has its own state.
+        assert!(edge_block_warning(&AtomicBool::new(false), &block(), false).is_some());
+    }
+
+    /// `-q` suppresses the warning.
+    #[test]
+    fn a_quiet_sign_in_is_not_warned_of_an_edge_block() {
+        let warned = AtomicBool::new(false);
+        let block = answer_to("403 Forbidden", "text/html", "<html></html>");
+        assert!(matches!(block, Confirm::NotYet(_)), "{block:?}");
+        assert_eq!(edge_block_warning(&warned, &block, true), None);
+    }
+
+    /// A stale cookie in a kept profile answers a 401 or a plain 403 before the owner
+    /// has signed in, so those stay silent, as does a login page. None of them uses up
+    /// the warning, so a block after them still earns it.
+    #[test]
+    fn a_refusal_that_is_not_block_shaped_stays_silent() {
+        let warned = AtomicBool::new(false);
+        for (status, content_type, body) in [
+            ("401 Unauthorized", "application/json", ""),
+            ("403 Forbidden", "application/json", ""),
+            ("200 OK", "text/html", "<!doctype html>"),
+        ] {
+            let answer = answer_to(status, content_type, body);
+            assert!(matches!(answer, Confirm::NotYet(_)), "{status}: {answer:?}");
+            assert_eq!(
+                edge_block_warning(&warned, &answer, false),
+                None,
+                "{status}"
+            );
+        }
+        let block = answer_to("403 Forbidden", "text/html", "<html></html>");
+        assert!(edge_block_warning(&warned, &block, false).is_some());
+    }
+
+    /// Only a refusal can warn.
+    #[test]
+    fn only_a_not_yet_answer_can_warn_of_an_edge_block() {
+        let warned = AtomicBool::new(false);
+        assert_eq!(edge_block_warning(&warned, &Confirm::Ready, false), None);
+    }
+
     /// What waiting will not fix ends the wait: a 404, a rate limit, a
     /// server error, or a 200 that is not the account object. A visitor's
     /// `/capitan/v1/me` is a 401, so an empty, `null` or non-object 200 is
@@ -1475,7 +1569,7 @@ mod tests {
     /// host is on.
     #[test]
     fn the_browser_capture_is_well_formed() {
-        let capture = browser_capture().unwrap();
+        let capture = browser_capture(true).unwrap();
         capture.validate().unwrap();
         assert_eq!(capture.label(), "Wealthfront");
     }
@@ -1484,7 +1578,7 @@ mod tests {
     /// URL that is not an https URL on one of them, so a probe cookie asks
     /// the definition itself, not a copy of its rule.
     fn reads_from(url: &str) -> bool {
-        browser_capture()
+        browser_capture(true)
             .unwrap()
             .cookie(url, "probe")
             .validate()
