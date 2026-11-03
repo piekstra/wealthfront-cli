@@ -426,7 +426,7 @@ fn me_verdict(me: Result<Value, ReadError>) -> Confirm {
         Err(ReadError::Failed(CliError::Auth(why))) => {
             Confirm::NotYet(format!("{read} was refused: {why}"))
         }
-        Err(ReadError::NoAccount(_)) => {
+        Err(ReadError::NotSignedIn(_)) => {
             Confirm::NotYet(format!("{read} answered with no account in it"))
         }
         // The read could not decide. The crate keeps the tab and the jar, since the

@@ -462,7 +462,7 @@ impl Wf {
         Err(if me.is_null() {
             ReadError::Empty(error)
         } else {
-            ReadError::NoAccount(error)
+            ReadError::NotSignedIn(error)
         })
     }
 
@@ -812,7 +812,7 @@ pub enum ReadError {
     /// A 2xx with nothing in it.
     Empty(CliError),
     /// A parseable answer with no account in it.
-    NoAccount(CliError),
+    NotSignedIn(CliError),
     Failed(CliError),
 }
 
@@ -830,7 +830,7 @@ impl From<ReadError> for CliError {
             | ReadError::NoAnswer(error)
             | ReadError::NotJson(error)
             | ReadError::Empty(error)
-            | ReadError::NoAccount(error)
+            | ReadError::NotSignedIn(error)
             | ReadError::Failed(error) => error,
         }
     }
