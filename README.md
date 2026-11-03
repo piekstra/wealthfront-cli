@@ -110,16 +110,25 @@ standard install paths. The mechanism is cli-common's `pk-cli-browser`
 macOS and `$XDG_DATA_HOME/piekstra.wfr/browser-profile` (or under
 `~/.local/share`) on Linux. Wealthfront's own cookies stay there between
 sign-ins, so a later `--browser` asks for less, often nothing: the window opens,
-the app loads signed in, the session is read and the window closes. That is a
-trade: a profile on disk that holds Wealthfront's cookies, for far fewer
-sign-ins. On Windows every sign-in uses a scratch profile.
+the app loads signed in, the session is read and the window closes. On Windows
+every sign-in uses a scratch profile.
+
+That is a trade: far fewer sign-ins, for a full Chrome profile on disk. Besides
+Wealthfront's cookies, it holds browsing history with full URLs including query
+strings, the HTTP cache and site storage. Chrome's cookie encryption does not
+cover those, so `0700` is their only protection, and the directory is one
+ordinary backups usually include. See [SECURITY.md](SECURITY.md).
 
 - `wfr auth login --browser --fresh-profile` signs in through a scratch profile
   deleted afterwards, and leaves the kept one alone. Wealthfront sees a new
   device, so expect its full sign-in.
 - `wfr auth logout` removes the kept profile too, so the next sign-in starts
   signed out. It refuses while a sign-in or a Chrome is using the profile (exit
-  1, after clearing the keychain session): close that window and log out again.
+  1): the keychain session is already cleared and only the profile remains, so
+  close that window and log out again.
+- A sign-in that times out or whose window is closed leaves the kept profile in
+  place, and says so. `wfr auth logout` removes it, and clears the stored
+  session too. `wfr auth status` does not report the profile.
 
 Wealthfront requires two-factor authentication on **every** account with no way
 to disable it. A login that needs a code parks its in-flight session in the

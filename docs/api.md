@@ -527,7 +527,10 @@ has run in a kept profile yet, so how far Wealthfront lets one go (and whether
 its 2FA prompt still appears) is unknown. `--fresh-profile` runs one sign-in in
 a scratch profile instead: `0700`, created exclusively under an unpredictable
 name in the temp dir, and deleted on exit. `wfr auth logout` removes the kept
-profile as its last step.
+profile as its last step. It is a full Chrome profile: SECURITY.md lists what it
+holds. The capture reads cookies only, never `localStorage`, and a jar left from
+an earlier sign-in passes only if `GET /capitan/v1/me` still accepts it, so a
+stale session keeps the wait going until the owner signs in.
 `WFR_CHROME` points at a Chrome binary. Without it, the crate looks in the
 standard macOS paths (Chrome, Chromium, Edge, also under `~/Applications`),
 then the Linux ones.
@@ -543,10 +546,10 @@ logged in — session captured from the browser
 | Outcome | Exit |
 |---|---|
 | Signed in and confirmed | 0 |
-| 10 minutes pass, or the window is closed first. The message names what was seen (no `www.wealthfront.com` page open, `_wfsid` not set, or `GET /capitan/v1/me answered as signed out`, with the jar's cookie names, never values) and ends ``Re-run `wfr auth login --browser` and finish signing in.`` | 3 |
+| 10 minutes pass, or the window is closed first. The message names what was seen (no `www.wealthfront.com` page open, `_wfsid` not set, or `GET /capitan/v1/me answered as signed out`, with the jar's cookie names, never values) and says ``Re-run `wfr auth login --browser` and finish signing in.`` In a kept profile it ends by saying the profile stays on disk and `wfr auth logout` removes it, and clears the stored session too | 3 |
 | The confirm read failed for a reason other than sign-in | 5 |
 | Ctrl-C (`browser login canceled`), no Chrome found, or Chrome failed to start | 1 |
-| The kept profile is in use (another sign-in, or a Chrome still running in it) or needs repair (a symlink, another user's, not `0700`). The same goes for `wfr auth logout`, whose keychain items are cleared by then. The message names the path and what to do | 1 |
+| The kept profile is in use (another sign-in, or a Chrome still running in it) or needs repair (a symlink, another user's, not `0700`). The message names the path and what to do. The same goes for `wfr auth logout`, whose error adds that the session is already cleared and only the browser profile remains | 1 |
 | A second Ctrl-C, when the first did not end the wait: Chrome is killed, and a scratch profile deleted | 130 |
 
 **The surface around it.** `--browser` takes no other credential source: with

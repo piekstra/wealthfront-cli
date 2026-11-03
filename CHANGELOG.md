@@ -15,4 +15,10 @@ keeps, where it used to run in a scratch profile deleted after every sign-in.
 - `wfr auth logout` also removes the kept profile, as its last step. It exits 1
   with the crate's message while a sign-in or a Chrome is using the profile, or
   when the path is a symlink or another user's; the keychain items are cleared
-  by then.
+  by then, and the error and `auth logout --help` say so.
+- A `--browser` sign-in that times out or whose window is closed says the kept
+  profile stays and that `wfr auth logout` removes it.
+- SECURITY.md and the README state what the kept profile holds: it is a full
+  Chrome profile, with history, HTTP cache and site storage outside Chrome's
+  cookie encryption, `0700` as their only protection, in a directory backups
+  usually include.

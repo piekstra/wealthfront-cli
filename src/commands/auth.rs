@@ -30,7 +30,12 @@
 //!
 //! The window runs in a Chrome profile `wfr` keeps between sign-ins, so a later
 //! `--browser` often needs no input; `--fresh-profile` opts out for one run,
-//! and `auth logout` removes it ([`logout_browser`]).
+//! and `auth logout` removes it ([`logout_browser`]). It is a full Chrome
+//! profile: cookies, and browsing history with full URLs including query
+//! strings, the HTTP cache and site storage, which Chrome's cookie encryption
+//! does not cover and only the directory's `0700` mode protects. A session
+//! cookie left in it is never trusted alone: only [`confirm_session`]'s read
+//! accepts a session.
 
 use std::io::IsTerminal;
 
@@ -83,7 +88,8 @@ pub enum AuthCmd {
     /// Report credential/session state (auth-status/v1).
     Status(StatusArgs),
     /// Clear the session and remove the kept browser profile; --forget also
-    /// removes the stored password.
+    /// removes the stored password. If the profile is in use or needs repair,
+    /// the rest is still cleared and this exits 1: fix that and run it again.
     Logout(LogoutArgs),
     /// Raw keychain write for rotation / headless setup.
     SetCredential(SetCredentialArgs),
@@ -383,8 +389,29 @@ fn browser_session(fresh_profile: bool, quiet: bool) -> Result<Secret, CliError>
         .url(format!("{BASE}{}", endpoints::LOGIN_PAGE))
         .fresh_profile(fresh_profile)
         .quiet(quiet);
-    let captured = pk_cli_browser::capture(launch, &browser_capture()?, DEFAULT_TIMEOUT)?;
+    // The crate keeps a profile on unix only; elsewhere every sign-in is scratch.
+    let kept_profile = !fresh_profile && cfg!(unix);
+    let captured = pk_cli_browser::capture(launch, &browser_capture()?, DEFAULT_TIMEOUT)
+        .map_err(|e| note_kept_profile(e, kept_profile))?;
     captured.cookie_header().ok_or_else(no_jar)
+}
+
+/// A sign-in that timed out or lost its window still leaves the kept profile on
+/// disk, with whatever that attempt put there, so its error says so and names
+/// the way to remove it. The exit code stays the crate's.
+fn note_kept_profile(err: BrowserError, kept_profile: bool) -> BrowserError {
+    let note = |message: String| {
+        format!(
+            "{message} The kept browser profile stays on disk; `{} auth logout` removes it, and \
+             clears the stored session too.",
+            crate::BIN
+        )
+    };
+    match err {
+        BrowserError::TimedOut(m) if kept_profile => BrowserError::TimedOut(note(m)),
+        BrowserError::WindowClosed(m) if kept_profile => BrowserError::WindowClosed(note(m)),
+        other => other,
+    }
 }
 
 fn no_jar() -> CliError {
@@ -450,22 +477,40 @@ fn logout(
         creds.delete(DEVICE_ACCOUNT)?;
         store.clear()?;
     }
-    // Last, so a refusal (its window still open) leaves the rest done.
-    let line = logout_browser(|| pk_cli_browser::forget_profile(crate::BIN))?;
+    // Last, so a refusal (its window still open) leaves the rest done, and its
+    // error says so.
+    let line = logout_browser(args.forget, || pk_cli_browser::forget_profile(crate::BIN))?;
     if !quiet {
         eprintln!("{line}");
     }
     Ok(())
 }
 
-/// `auth logout`'s browser step. The profile a `--browser` sign-in keeps holds
-/// Wealthfront's own cookies (its remembered device and session), so a logout
-/// removes it too and the next sign-in starts signed out. The removal is
-/// passed in: the binary binds it to `forget_profile(BIN)`, the tests to
-/// `forget_profile_in` under a temp dir, so a test never removes the owner's
-/// real profile. Returns the status line.
-fn logout_browser(forget: impl FnOnce() -> Result<bool, BrowserError>) -> Result<String, CliError> {
-    let removed = forget()?;
+/// `auth logout`'s browser step. The profile a `--browser` sign-in keeps is a
+/// full Chrome profile: Wealthfront's own cookies (its remembered device and
+/// session), and browsing history with full URLs, the HTTP cache and site
+/// storage, which Chrome's cookie encryption does not cover. So a logout removes
+/// it too, and the next sign-in starts signed out. The removal is passed in: the
+/// binary binds it to `forget_profile(BIN)`, the tests to `forget_profile_in`
+/// under a temp dir, so a test never removes the owner's real profile. Returns
+/// the status line. A refusal comes last, so its error (exit 1) says what is
+/// already cleared and how to finish.
+fn logout_browser(
+    forgot_credentials: bool,
+    forget_profile: impl FnOnce() -> Result<bool, BrowserError>,
+) -> Result<String, CliError> {
+    let removed = forget_profile().map_err(|e| {
+        CliError::Other(format!(
+            "the session is already cleared{}; only the browser profile remains: {e}. \
+             Once that is fixed, run `{} auth logout` again to finish.",
+            if forgot_credentials {
+                " and the stored credentials forgotten"
+            } else {
+                ""
+            },
+            crate::BIN
+        ))
+    })?;
     Ok(format!(
         "logged out{}",
         if removed {
@@ -514,7 +559,7 @@ mod tests {
         std::fs::create_dir_all(profile.join("Default")).unwrap();
         let forget = || pk_cli_browser::forget_profile_in(&root, crate::BIN);
         assert_eq!(
-            logout_browser(forget).unwrap(),
+            logout_browser(false, forget).unwrap(),
             "logged out; browser profile removed"
         );
         assert!(!profile.exists());
@@ -527,24 +572,63 @@ mod tests {
     fn logout_with_no_kept_profile_still_logs_out() {
         let (root, _) = profile_under_temp("none");
         let forget = || pk_cli_browser::forget_profile_in(&root, crate::BIN);
-        assert_eq!(logout_browser(forget).unwrap(), "logged out");
+        assert_eq!(logout_browser(false, forget).unwrap(), "logged out");
     }
 
-    /// A profile in use refuses the logout's last step with the crate's
-    /// message, which says what to close, and exit 1.
+    /// A profile in use refuses the logout's last step, exit 1. The session
+    /// is gone by then, so the error says that first, then what is left, the
+    /// crate's reason and how to finish.
     #[test]
     fn logout_reports_a_profile_in_use() {
-        let err = logout_browser(|| {
+        let in_use = || {
             Err(BrowserError::ProfileInUse(
                 "a Chrome (pid 7) is still running in dummy-profile".into(),
             ))
-        })
-        .unwrap_err();
+        };
+        let err = logout_browser(false, in_use).unwrap_err();
         assert_eq!(err.exit_code(), 1);
         assert_eq!(
             err.to_string(),
-            "a Chrome (pid 7) is still running in dummy-profile"
+            "the session is already cleared; only the browser profile remains: a Chrome (pid \
+             7) is still running in dummy-profile. Once that is fixed, run `wfr auth logout` \
+             again to finish."
         );
+        let err = logout_browser(true, in_use).unwrap_err();
+        assert_eq!(err.exit_code(), 1);
+        assert!(
+            err.to_string().starts_with(
+                "the session is already cleared and the stored credentials forgotten; only the \
+                 browser profile remains: "
+            ),
+            "{err}"
+        );
+    }
+
+    /// A failed sign-in in a kept profile says the profile stays and how to
+    /// remove it, keeping the crate's message and exit code. A scratch profile
+    /// is gone by then, so it says nothing, and other errors pass unchanged.
+    #[test]
+    fn a_failed_sign_in_says_the_kept_profile_stays() {
+        let failures = [
+            BrowserError::TimedOut("timed out.".into()),
+            BrowserError::WindowClosed("window closed.".into()),
+        ];
+        for err in failures {
+            let plain = err.to_string();
+            let noted = note_kept_profile(err, true);
+            assert_eq!(noted.exit_code(), 3);
+            assert_eq!(
+                noted.to_string(),
+                format!(
+                    "{plain} The kept browser profile stays on disk; `wfr auth logout` removes \
+                     it, and clears the stored session too."
+                )
+            );
+        }
+        let scratch = note_kept_profile(BrowserError::TimedOut("timed out.".into()), false);
+        assert_eq!(scratch.to_string(), "timed out.");
+        let canceled = note_kept_profile(BrowserError::Canceled, true);
+        assert_eq!(canceled.to_string(), "browser login canceled");
     }
 
     /// A kept profile that is a symlink needs repair: the crate refuses it,
@@ -557,10 +641,13 @@ mod tests {
         std::fs::create_dir_all(&target).unwrap();
         std::fs::create_dir_all(profile.parent().unwrap()).unwrap();
         std::os::unix::fs::symlink(&target, &profile).unwrap();
-        let err =
-            logout_browser(|| pk_cli_browser::forget_profile_in(&root, crate::BIN)).unwrap_err();
+        let err = logout_browser(false, || {
+            pk_cli_browser::forget_profile_in(&root, crate::BIN)
+        })
+        .unwrap_err();
         assert_eq!(err.exit_code(), 1);
         assert!(err.to_string().contains("refusing to remove it"), "{err}");
+        assert!(err.to_string().contains("only the browser profile remains"));
         assert!(target.exists() && profile.symlink_metadata().is_ok());
         std::fs::remove_dir_all(&root).unwrap();
     }

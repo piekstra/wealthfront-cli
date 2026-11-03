@@ -148,6 +148,19 @@ fn fresh_profile_requires_the_browser_flag() {
         .stderr(predicate::str::contains("--browser"));
 }
 
+/// A logout whose profile removal is refused has already cleared the rest, and
+/// its help says so before anyone runs into it.
+#[test]
+fn logout_help_says_a_refused_profile_leaves_the_rest_cleared() {
+    wfr()
+        .args(["auth", "logout", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "the rest is still cleared and this exits 1",
+        ));
+}
+
 /// A loopback stand-in for www.wealthfront.com serving the two login-flow
 /// requests: `GET /login` (sets the `login_xsrf` cookie) and the login POST
 /// (answered with `body`). Std only — no mock library (AGENTS.md).

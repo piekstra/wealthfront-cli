@@ -118,6 +118,13 @@ sign-in in a scratch profile and leaves the kept one alone. `auth logout`
 removes the kept profile as its last step, through `logout_browser`, whose
 removal is a closure: the binary binds `forget_profile(BIN)`, tests bind
 `forget_profile_in(&temp_dir, BIN)`. A test never reaches the real profile.
+It is a full Chrome profile: history with full URLs, the HTTP cache and site
+storage sit outside Chrome's cookie encryption (SECURITY.md). A timed-out or
+closed-window sign-in leaves it and its error says so (`note_kept_profile`). A
+refused logout's error says the session is already cleared. `auth status` does
+not report the profile: cli-common v0.16.0 has no call for it, and wfr must not
+work out the path itself. The capture reads no `localStorage`; keep it that way,
+or a stale token bundle in the kept profile becomes readable on page load.
 
 **One JSON document per invocation.** If a command already emitted its DTO and
 then needs a nonzero exit, `std::process::exit` directly — returning an error
