@@ -16,8 +16,9 @@ keeps, where it used to run in a scratch profile deleted after every sign-in.
   with the crate's message while a sign-in or a Chrome is using the profile, or
   when the path is a symlink or another user's; the keychain items are cleared
   by then, and the error and `auth logout --help` say so.
-- While `WFR_KEYCHAIN_SERVICE` is set, `wfr auth logout` leaves the real profile
-  in place and says so.
+- While `WFR_KEYCHAIN_SERVICE` names a service, `wfr auth logout` leaves the real
+  profile in place and `wfr auth login --browser` uses a scratch profile, and each
+  says so.
 - Every `--browser` failure in the kept profile says the profile stays and that
   `wfr auth logout` removes it.
 - SECURITY.md and the README state what the kept profile holds: it is a full

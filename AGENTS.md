@@ -293,5 +293,7 @@ prints the definitions without a credential. To see the sign-in error
 without opening the real session, set `WFR_KEYCHAIN_SERVICE` to a service
 that holds nothing: a missing keychain item is read without a prompt and
 fails as "not logged in". The variable only renames which entry is read; it
-never carries a session. It does not move the kept browser profile, so `wfr auth
-logout` skips the removal while it is set and says so.
+never carries a session. A service it names is a test namespace that must not
+read or change the real kept browser profile: `wfr auth logout` skips the removal
+and says so, and `wfr auth login --browser` takes a scratch profile and says so
+(`scratch_profile_choice`).
