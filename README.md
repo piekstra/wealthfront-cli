@@ -117,7 +117,10 @@ That is a trade: far fewer sign-ins, for a full Chrome profile on disk. Besides
 Wealthfront's cookies, it holds browsing history with full URLs including query
 strings, the HTTP cache and site storage. Chrome's cookie encryption does not
 cover those, so `0700` is their only protection, and the directory is one
-ordinary backups usually include. See [SECURITY.md](SECURITY.md).
+ordinary backups usually include. On Linux with no desktop keyring, Chrome
+encrypts cookies with a fixed, publicly known key, so `0700` is all that protects
+the session cookie too: use `--fresh-profile` there. See
+[SECURITY.md](SECURITY.md).
 
 - `wfr auth login --browser --fresh-profile` signs in through a scratch profile
   deleted afterwards, and leaves the kept one alone. Wealthfront sees a new
@@ -126,9 +129,10 @@ ordinary backups usually include. See [SECURITY.md](SECURITY.md).
   signed out. It refuses while a sign-in or a Chrome is using the profile (exit
   1): the keychain session is already cleared and only the profile remains, so
   close that window and log out again.
-- A sign-in that times out or whose window is closed leaves the kept profile in
-  place, and says so. `wfr auth logout` removes it, and clears the stored
-  session too. `wfr auth status` does not report the profile.
+- A sign-in that fails for any reason, Ctrl-C included, leaves the kept profile
+  in place, possibly signed in, and its error says so. `wfr auth logout` removes
+  it, and clears the stored session too. `wfr auth status` does not report the
+  profile.
 
 Wealthfront requires two-factor authentication on **every** account with no way
 to disable it. A login that needs a code parks its in-flight session in the

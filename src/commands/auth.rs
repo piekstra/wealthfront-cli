@@ -33,9 +33,11 @@
 //! and `auth logout` removes it ([`logout_browser`]). It is a full Chrome
 //! profile: cookies, and browsing history with full URLs including query
 //! strings, the HTTP cache and site storage, which Chrome's cookie encryption
-//! does not cover and only the directory's `0700` mode protects. A session
-//! cookie left in it is never trusted alone: only [`confirm_session`]'s read
-//! accepts a session.
+//! does not cover and only the directory's `0700` mode protects. On Linux with no
+//! desktop keyring, Chrome encrypts cookies with a fixed, publicly known key, so
+//! there the session cookie has only `0700` protecting it too. A session cookie
+//! left in it is never trusted alone: only [`confirm_session`]'s read accepts a
+//! session.
 
 use std::io::IsTerminal;
 
@@ -50,7 +52,9 @@ use serde_json::Value;
 
 use crate::client::{clear_pending, endpoints, CodeChannel, Wf, BASE};
 use crate::config::Config;
-use crate::keychain::{DEVICE_ACCOUNT, PASSWORD_ACCOUNT, PENDING_ACCOUNT, SESSION_ACCOUNT};
+use crate::keychain::{
+    self, DEVICE_ACCOUNT, PASSWORD_ACCOUNT, PENDING_ACCOUNT, SERVICE_ENV, SESSION_ACCOUNT,
+};
 
 /// `--browser` captures the session, so it takes no other credential source:
 /// clap refuses it beside `--stdin` or `--from-env` (exit 2) before anything
@@ -135,12 +139,16 @@ fn login(
     // where reCAPTCHA sees a real browser (docs/api.md §3.2, §3.6), and the
     // confirmed session is stored like any other.
     if args.browser.browser {
-        let session = browser_session(args.browser.fresh_profile, quiet)?;
-        creds.set(SESSION_ACCOUNT, &session)?;
-        if !quiet {
-            eprintln!("logged in — session captured from the browser");
-        }
-        return Ok(());
+        let fresh_profile = args.browser.fresh_profile;
+        let note = kept_profile_note(fresh_profile, keychain::service_overridden());
+        return noting_kept_profile(note, || {
+            let session = browser_session(fresh_profile, quiet)?;
+            creds.set(SESSION_ACCOUNT, &session)?;
+            if !quiet {
+                eprintln!("logged in — session captured from the browser");
+            }
+            Ok(())
+        });
     }
 
     // A code on the command line belongs to the login that requested it, so
@@ -389,28 +397,65 @@ fn browser_session(fresh_profile: bool, quiet: bool) -> Result<Secret, CliError>
         .url(format!("{BASE}{}", endpoints::LOGIN_PAGE))
         .fresh_profile(fresh_profile)
         .quiet(quiet);
-    // The crate keeps a profile on unix only; elsewhere every sign-in is scratch.
-    let kept_profile = !fresh_profile && cfg!(unix);
-    let captured = pk_cli_browser::capture(launch, &browser_capture()?, DEFAULT_TIMEOUT)
-        .map_err(|e| note_kept_profile(e, kept_profile))?;
+    let captured = pk_cli_browser::capture(launch, &browser_capture()?, DEFAULT_TIMEOUT)?;
     captured.cookie_header().ok_or_else(no_jar)
 }
 
-/// A sign-in that timed out or lost its window still leaves the kept profile on
-/// disk, with whatever that attempt put there, so its error says so and names
-/// the way to remove it. The exit code stays the crate's.
-fn note_kept_profile(err: BrowserError, kept_profile: bool) -> BrowserError {
-    let note = |message: String| {
+/// Whether a sign-in runs in the kept profile. The crate keeps one on unix only;
+/// elsewhere every sign-in is scratch.
+fn runs_in_kept_profile(fresh_profile: bool) -> bool {
+    !fresh_profile && cfg!(unix)
+}
+
+/// The note a sign-in's failure carries: unless it ran in a scratch profile, the
+/// kept profile stays on disk, possibly signed in, so the owner is told and told
+/// how to remove it. `None` for `--fresh-profile`, and where the crate keeps no
+/// profile. `auth logout` leaves the profile alone while the keychain service is
+/// overridden, so the note says that instead.
+fn kept_profile_note(fresh_profile: bool, service_overridden: bool) -> Option<String> {
+    if !runs_in_kept_profile(fresh_profile) {
+        return None;
+    }
+    Some(if service_overridden {
         format!(
-            "{message} The kept browser profile stays on disk; `{} auth logout` removes it, and \
-             clears the stored session too.",
+            "The kept browser profile stays on disk; `{} auth logout` leaves it while {SERVICE_ENV} \
+             is set.",
             crate::BIN
         )
-    };
+    } else {
+        format!(
+            "The kept browser profile stays on disk; `{} auth logout` removes it, and clears the \
+             stored session too.",
+            crate::BIN
+        )
+    })
+}
+
+/// Runs a browser sign-in, from opening the window through storing the session,
+/// and adds `note` to whatever fails, keeping the exit code. Every failure goes
+/// through here (a timeout, a closed window, Ctrl-C, a confirm hook ending the
+/// wait, a keychain write after the capture), so a new failure path can't miss
+/// the note. The ones most likely to leave a live session are the last two.
+fn noting_kept_profile<T>(
+    note: Option<String>,
+    sign_in: impl FnOnce() -> Result<T, CliError>,
+) -> Result<T, CliError> {
+    sign_in().map_err(|err| match note {
+        Some(note) => with_note(err, &note),
+        None => err,
+    })
+}
+
+fn with_note(err: CliError, note: &str) -> CliError {
+    let add = |message: String| format!("{}. {note}", message.trim_end_matches('.'));
     match err {
-        BrowserError::TimedOut(m) if kept_profile => BrowserError::TimedOut(note(m)),
-        BrowserError::WindowClosed(m) if kept_profile => BrowserError::WindowClosed(note(m)),
-        other => other,
+        CliError::Usage(m) => CliError::Usage(add(m)),
+        CliError::Auth(m) => CliError::Auth(add(m)),
+        CliError::NotFound(m) => CliError::NotFound(add(m)),
+        CliError::Upstream(m) => CliError::Upstream(add(m)),
+        CliError::ConfirmationRequired(m) => CliError::ConfirmationRequired(add(m)),
+        CliError::Keychain(m) => CliError::Keychain(add(m)),
+        CliError::Other(m) => CliError::Other(add(m)),
     }
 }
 
@@ -479,7 +524,9 @@ fn logout(
     }
     // Last, so a refusal (its window still open) leaves the rest done, and its
     // error says so.
-    let line = logout_browser(args.forget, || pk_cli_browser::forget_profile(crate::BIN))?;
+    let line = logout_browser(args.forget, keychain::service_overridden(), || {
+        pk_cli_browser::forget_profile(crate::BIN)
+    })?;
     if !quiet {
         eprintln!("{line}");
     }
@@ -495,10 +542,25 @@ fn logout(
 /// under a temp dir, so a test never removes the owner's real profile. Returns
 /// the status line. A refusal comes last, so its error (exit 1) says what is
 /// already cleared and how to finish.
+///
+/// [`SERVICE_ENV`] moves the keychain but not the profile, so while it is set
+/// (`service_overridden`) the keychain cleared here is not the real one. The
+/// real profile is left alone, and the line says so.
 fn logout_browser(
     forgot_credentials: bool,
+    service_overridden: bool,
     forget_profile: impl FnOnce() -> Result<bool, BrowserError>,
 ) -> Result<String, CliError> {
+    if service_overridden {
+        return Ok(format!(
+            "logged out{}; {SERVICE_ENV} is set, so the real browser profile was left in place",
+            if forgot_credentials {
+                " and forgot the stored credentials"
+            } else {
+                ""
+            }
+        ));
+    }
     let removed = forget_profile().map_err(|e| {
         CliError::Other(format!(
             "the session is already cleared{}; only the browser profile remains: {e}. \
@@ -512,7 +574,12 @@ fn logout_browser(
         ))
     })?;
     Ok(format!(
-        "logged out{}",
+        "logged out{}{}",
+        if forgot_credentials {
+            " and forgot the stored credentials"
+        } else {
+            ""
+        },
         if removed {
             "; browser profile removed"
         } else {
@@ -559,7 +626,7 @@ mod tests {
         std::fs::create_dir_all(profile.join("Default")).unwrap();
         let forget = || pk_cli_browser::forget_profile_in(&root, crate::BIN);
         assert_eq!(
-            logout_browser(false, forget).unwrap(),
+            logout_browser(false, false, forget).unwrap(),
             "logged out; browser profile removed"
         );
         assert!(!profile.exists());
@@ -572,7 +639,7 @@ mod tests {
     fn logout_with_no_kept_profile_still_logs_out() {
         let (root, _) = profile_under_temp("none");
         let forget = || pk_cli_browser::forget_profile_in(&root, crate::BIN);
-        assert_eq!(logout_browser(false, forget).unwrap(), "logged out");
+        assert_eq!(logout_browser(false, false, forget).unwrap(), "logged out");
     }
 
     /// A profile in use refuses the logout's last step, exit 1. The session
@@ -585,7 +652,7 @@ mod tests {
                 "a Chrome (pid 7) is still running in dummy-profile".into(),
             ))
         };
-        let err = logout_browser(false, in_use).unwrap_err();
+        let err = logout_browser(false, false, in_use).unwrap_err();
         assert_eq!(err.exit_code(), 1);
         assert_eq!(
             err.to_string(),
@@ -593,7 +660,7 @@ mod tests {
              7) is still running in dummy-profile. Once that is fixed, run `wfr auth logout` \
              again to finish."
         );
-        let err = logout_browser(true, in_use).unwrap_err();
+        let err = logout_browser(true, false, in_use).unwrap_err();
         assert_eq!(err.exit_code(), 1);
         assert!(
             err.to_string().starts_with(
@@ -604,31 +671,85 @@ mod tests {
         );
     }
 
-    /// A failed sign-in in a kept profile says the profile stays and how to
-    /// remove it, keeping the crate's message and exit code. A scratch profile
-    /// is gone by then, so it says nothing, and other errors pass unchanged.
+    /// While the keychain service is overridden, the real profile is out of
+    /// reach: the removal is never called, and the line says it was left.
     #[test]
-    fn a_failed_sign_in_says_the_kept_profile_stays() {
-        let failures = [
-            BrowserError::TimedOut("timed out.".into()),
-            BrowserError::WindowClosed("window closed.".into()),
+    fn logout_leaves_the_real_profile_under_a_service_override() {
+        let never = || -> Result<bool, BrowserError> {
+            panic!("the real profile must not be removed under a service override")
+        };
+        assert_eq!(
+            logout_browser(false, true, never).unwrap(),
+            "logged out; WFR_KEYCHAIN_SERVICE is set, so the real browser profile was left in place"
+        );
+        assert_eq!(
+            logout_browser(true, true, never).unwrap(),
+            "logged out and forgot the stored credentials; WFR_KEYCHAIN_SERVICE is set, so the real browser \
+             profile was left in place"
+        );
+    }
+
+    /// Every failure of a sign-in in a kept profile carries the note and keeps
+    /// its exit code, the ones most likely to leave a live session included.
+    #[test]
+    fn every_failed_sign_in_says_the_kept_profile_stays() {
+        let note = kept_profile_note(false, false);
+        let cases: Vec<(CliError, i32, &str)> = vec![
+            (
+                BrowserError::TimedOut("timed out.".into()).into(),
+                3,
+                "timed out",
+            ),
+            (
+                BrowserError::WindowClosed("window closed.".into()).into(),
+                3,
+                "window closed",
+            ),
+            (BrowserError::Canceled.into(), 1, "browser login canceled"),
+            (
+                BrowserError::Handler(CliError::Upstream("HTTP 429".into())).into(),
+                5,
+                "HTTP 429",
+            ),
+            (CliError::Keychain("dummy write".into()), 1, "dummy write"),
         ];
-        for err in failures {
-            let plain = err.to_string();
-            let noted = note_kept_profile(err, true);
-            assert_eq!(noted.exit_code(), 3);
-            assert_eq!(
-                noted.to_string(),
-                format!(
-                    "{plain} The kept browser profile stays on disk; `wfr auth logout` removes \
-                     it, and clears the stored session too."
-                )
+        for (err, code, message) in cases {
+            let noted = noting_kept_profile::<()>(note.clone(), || Err(err)).unwrap_err();
+            assert_eq!(noted.exit_code(), code, "{message}");
+            let text = noted.to_string();
+            assert!(text.contains(message), "{text}");
+            assert!(
+                text.contains(
+                    "The kept browser profile stays on disk; `wfr auth logout` removes it, \
+                     and clears the stored session too."
+                ),
+                "{text}"
             );
         }
-        let scratch = note_kept_profile(BrowserError::TimedOut("timed out.".into()), false);
-        assert_eq!(scratch.to_string(), "timed out.");
-        let canceled = note_kept_profile(BrowserError::Canceled, true);
-        assert_eq!(canceled.to_string(), "browser login canceled");
+        assert_eq!(noting_kept_profile(note, || Ok(7)).unwrap(), 7);
+    }
+
+    /// A scratch profile is gone by then, so `--fresh-profile` adds nothing.
+    #[test]
+    fn a_fresh_profile_sign_in_carries_no_note() {
+        assert_eq!(kept_profile_note(true, false), None);
+        let err = noting_kept_profile::<()>(kept_profile_note(true, false), || {
+            Err(BrowserError::TimedOut("timed out.".into()).into())
+        })
+        .unwrap_err();
+        assert_eq!(err.to_string(), "timed out.");
+    }
+
+    /// `auth logout` leaves the profile while the service is overridden, so the
+    /// note must not promise it removes it.
+    #[test]
+    fn the_note_does_not_promise_a_removal_under_a_service_override() {
+        let note = kept_profile_note(false, true).unwrap();
+        assert!(
+            note.contains("leaves it while WFR_KEYCHAIN_SERVICE is set"),
+            "{note}"
+        );
+        assert!(!note.contains("removes"), "{note}");
     }
 
     /// A kept profile that is a symlink needs repair: the crate refuses it,
@@ -641,7 +762,7 @@ mod tests {
         std::fs::create_dir_all(&target).unwrap();
         std::fs::create_dir_all(profile.parent().unwrap()).unwrap();
         std::os::unix::fs::symlink(&target, &profile).unwrap();
-        let err = logout_browser(false, || {
+        let err = logout_browser(false, false, || {
             pk_cli_browser::forget_profile_in(&root, crate::BIN)
         })
         .unwrap_err();

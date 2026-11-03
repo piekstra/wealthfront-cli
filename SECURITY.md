@@ -23,6 +23,9 @@ Secrets enter only via an interactive prompt, `--stdin`, or `--from-env <VAR>`
 written to a log. `--verbose` does not print secrets, cookies, or full account
 numbers.
 
+The one exception is the browser profile a `--browser` sign-in keeps (below),
+where Wealthfront's session cookies also sit.
+
 `wfr auth logout` clears the session and any parked login, and removes the kept
 browser profile (below); `--forget` also removes the stored password, device
 token, and config identity.
@@ -58,7 +61,11 @@ the device. It lives at
 Linux). It is a full Chrome profile, so it holds more than the session:
 
 - **Cookies**, Wealthfront's session among them. Chrome encrypts these at rest,
-  on macOS with the "Chrome Safe Storage" key in the login keychain.
+  on macOS with the "Chrome Safe Storage" key in the login keychain and on Linux
+  with the desktop keyring. **On Linux with no desktop keyring it falls back to a
+  fixed, publicly known key**, so there the session cookie is effectively
+  unencrypted and `0700` is its only protection. Use `--fresh-profile` on such a
+  machine.
 - **Browsing history with full URLs including query strings, the HTTP cache and
   site storage** (`localStorage`, IndexedDB). Chrome's cookie encryption does not
   cover these, and the directory's `0700` mode is their only protection. The
@@ -78,10 +85,12 @@ So:
   while it is in use or when it is a symlink or another user's (exit 1). The
   error says the session is already cleared and only the profile remains, names
   the path and says how to finish.
-- A sign-in that fails leaves it in place. A timeout or a closed window says so
-  and names `wfr auth logout`, which removes it and clears the stored session
-  too. `wfr auth status` does not report it: cli-common v0.16.0 has no call that
-  says whether a profile exists.
+- A sign-in that fails for any reason leaves it in place, possibly signed in: a
+  timeout, a closed window, Ctrl-C, a confirm read that ends the wait, a keychain
+  write that fails after the capture. The error says so and names `wfr auth
+  logout`, which removes it and clears the stored session too. A second Ctrl-C
+  kills Chrome with no such message. `wfr auth status` does not report it:
+  cli-common v0.16.0 has no call that says whether a profile exists.
 - A session cookie left in it from an earlier sign-in is not trusted alone: only
   a `GET /capitan/v1/me` that answers the account object accepts a session.
 - `--fresh-profile` runs one sign-in in a scratch profile instead, created
@@ -105,7 +114,9 @@ approval, once, to read the `piekstra.wfr` keychain item.
 
 `WFR_KEYCHAIN_SERVICE` renames the keychain service read and written, for
 tests and for checking the error paths against an empty service. It carries
-no secret.
+no secret. It does not move the kept browser profile: while it is set, `wfr auth
+logout` clears the named service, leaves the real profile in place and says so,
+and `wfr auth login --browser` still runs in the real profile.
 
 ## App-specific password — not usable for wfr's own login
 

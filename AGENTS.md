@@ -119,9 +119,10 @@ removes the kept profile as its last step, through `logout_browser`, whose
 removal is a closure: the binary binds `forget_profile(BIN)`, tests bind
 `forget_profile_in(&temp_dir, BIN)`. A test never reaches the real profile.
 It is a full Chrome profile: history with full URLs, the HTTP cache and site
-storage sit outside Chrome's cookie encryption (SECURITY.md). A timed-out or
-closed-window sign-in leaves it and its error says so (`note_kept_profile`). A
-refused logout's error says the session is already cleared. `auth status` does
+storage sit outside Chrome's cookie encryption, and on Linux with no desktop
+keyring so does the session cookie (SECURITY.md). A failed sign-in leaves it, and
+every failure gets the note because the whole sign-in runs inside
+`noting_kept_profile`. A refused logout's error says the session is already cleared. `auth status` does
 not report the profile: cli-common v0.16.0 has no call for it, and wfr must not
 work out the path itself. The capture reads no `localStorage`; keep it that way,
 or a stale token bundle in the kept profile becomes readable on page load.
@@ -292,6 +293,5 @@ prints the definitions without a credential. To see the sign-in error
 without opening the real session, set `WFR_KEYCHAIN_SERVICE` to a service
 that holds nothing: a missing keychain item is read without a prompt and
 fails as "not logged in". The variable only renames which entry is read; it
-never carries a session. It does not move the kept browser profile, so `wfr
-auth logout` under it still removes the real one: set `HOME` to a temp dir
-first.
+never carries a session. It does not move the kept browser profile, so `wfr auth
+logout` skips the removal while it is set and says so.
