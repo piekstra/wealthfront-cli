@@ -29,7 +29,7 @@ removes the stored password, device token, and config identity.
 ## Browser sign-in
 
 `wfr auth login --browser` runs cli-common's `pk-cli-browser`
-([cli-common DESIGN.md §2.2](https://github.com/piekstra/cli-common/blob/v0.14.0/DESIGN.md)).
+([cli-common DESIGN.md §2.2](https://github.com/piekstra/cli-common/blob/v0.15.1/DESIGN.md)).
 You type the password and the 2FA code on Wealthfront's own page in a Chrome
 window; they never pass through `wfr`. While the window is open:
 
