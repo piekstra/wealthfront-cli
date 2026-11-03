@@ -1698,8 +1698,9 @@ mod tests {
     }
 
     /// The `/capitan/v1/me` answer, mapped one to one from the embedded
-    /// capture: a session keeps the tab for the read, a signed-out answer
-    /// keeps waiting, anything else ends the wait as exit 5.
+    /// capture: a session keeps the tab for the read, a refused answer or one
+    /// with no account keeps waiting, a read that can't decide is `Undecided`,
+    /// and anything else (a 404, an unbuilt client) ends the wait as exit 5.
     #[test]
     fn the_me_read_decides_the_capture() {
         assert!(matches!(me_verdict(Ok(json!({}))), Confirm::Ready));
