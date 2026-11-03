@@ -51,7 +51,7 @@ use pk_cli_core::CliError;
 use pk_cli_secrets::{CredentialStore, Secret};
 use serde_json::Value;
 
-use crate::client::{clear_pending, endpoints, CodeChannel, Wf, BASE};
+use crate::client::{clear_pending, endpoints, CodeChannel, ReadError, Wf, BASE};
 use crate::config::Config;
 use crate::keychain::{
     self, DEVICE_ACCOUNT, PASSWORD_ACCOUNT, PENDING_ACCOUNT, SERVICE_ENV, SESSION_ACCOUNT,
@@ -133,7 +133,7 @@ pub fn run(
     // Loaded only in the arms that use it, so a logout runs every step even when
     // the file can't be parsed.
     match cmd {
-        AuthCmd::Login(args) => login(args, creds, &store.load()?, quiet, interactive),
+        AuthCmd::Login(args) => login(args, creds, &store.load()?, json, quiet, interactive),
         AuthCmd::Status(args) => status(args, creds, &store.load()?, json, quiet),
         AuthCmd::Logout(args) => logout(args, creds, store, keep_config, quiet),
         AuthCmd::SetCredential(args) => {
@@ -156,6 +156,7 @@ fn login(
     args: &PortalLoginArgs,
     creds: &CredentialStore,
     cfg: &Config,
+    json: bool,
     quiet: bool,
     interactive: bool,
 ) -> Result<(), CliError> {
@@ -176,6 +177,10 @@ fn login(
                 .map_err(BrowserError::Handler)?;
             if !quiet {
                 eprintln!("logged in — session captured from the browser");
+            }
+            if json {
+                // Only `Confirm::Ready`, a read that worked, hands a session over.
+                pk_cli_core::output::json(&login_result(cfg, AuthMethod::BrowserSession));
             }
             Ok(())
         });
@@ -202,7 +207,7 @@ fn login(
         // so a failed code can't be replayed against a dead session.
         clear_pending(creds)?;
         result?;
-        return finish(&wf, creds, quiet);
+        return finish(&wf, creds, cfg, json, quiet);
     }
 
     let username = cfg.username.as_deref().ok_or_else(|| {
@@ -323,7 +328,7 @@ fn login(
     let result = wf.verify_code(code.trim(), args.channel);
     clear_pending(creds)?;
     result?;
-    finish(&wf, creds, quiet)
+    finish(&wf, creds, cfg, json, quiet)
 }
 
 /// Read the password from the explicit source, or prompt when allowed.
@@ -345,7 +350,13 @@ fn read_password(args: &PortalLoginArgs) -> Result<pk_cli_secrets::Secret, CliEr
 /// cannot fetch anything leaves no broken session behind — and so the cookie
 /// stored is the one that survived that read, since the site may rotate it
 /// mid-flight.
-fn finish(wf: &Wf, creds: &CredentialStore, quiet: bool) -> Result<(), CliError> {
+fn finish(
+    wf: &Wf,
+    creds: &CredentialStore,
+    cfg: &Config,
+    json: bool,
+    quiet: bool,
+) -> Result<(), CliError> {
     wf.me()?;
     let session = wf.session_bundle().ok_or_else(|| {
         CliError::Upstream("login succeeded but Wealthfront issued no session cookie".into())
@@ -354,7 +365,22 @@ fn finish(wf: &Wf, creds: &CredentialStore, quiet: bool) -> Result<(), CliError>
     if !quiet {
         eprintln!("logged in");
     }
+    if json {
+        pk_cli_core::output::json(&login_result(cfg, AuthMethod::Password));
+    }
     Ok(())
+}
+
+/// A login's `--json` result: the family's `auth-status/v1`, plus `verified`. Every
+/// path here stores a session only after `GET /capitan/v1/me` accepted it, so it is
+/// always `true`.
+fn login_result(cfg: &Config, method: AuthMethod) -> Value {
+    let mut status = AuthStatus::new(true, true, method);
+    status.username = cfg.username.clone();
+    status.account = cfg.account.clone();
+    let mut result = status.to_json();
+    result["verified"] = Value::Bool(true);
+    result
 }
 
 /// The only host the session is read from, and whose tabs close once it is
@@ -387,8 +413,8 @@ fn browser_capture(quiet: bool) -> Result<Capture, CliError> {
 /// with the candidate jar, through the client every read uses. The request
 /// is bounded by that client's timeout.
 fn confirm_session(candidate: &Captured, quiet: bool, warned: &AtomicBool) -> Confirm {
-    let answer = confirm_session_with(candidate, Wf::from_bundle);
-    if let Some(line) = edge_block_warning(warned, &answer, quiet) {
+    let (answer, edge_block) = confirm_session_with(candidate, Wf::from_bundle);
+    if let Some(line) = edge_block_warning(warned, edge_block, quiet) {
         eprintln!("{line}");
     }
     answer
@@ -399,52 +425,58 @@ fn confirm_session(candidate: &Captured, quiet: bool, warned: &AtomicBool) -> Co
 /// polls stay silent. Anything else stays silent too: a stale cookie in a kept profile
 /// answers a 401 or a plain 403 before the owner has signed in. `quiet` suppresses it.
 /// The answer stays `NotYet`, since the window can still clear.
-fn edge_block_warning(warned: &AtomicBool, answer: &Confirm, quiet: bool) -> Option<String> {
-    let Confirm::NotYet(reason) = answer else {
-        return None;
-    };
-    if quiet || !crate::client::names_an_edge_block(reason) || warned.swap(true, Ordering::Relaxed)
-    {
+fn edge_block_warning(warned: &AtomicBool, edge_block: bool, quiet: bool) -> Option<String> {
+    if quiet || !edge_block || warned.swap(true, Ordering::Relaxed) {
         return None;
     }
-    Some(format!(
-        "warning: Wealthfront's answer to this sign-in is {}. Press Ctrl-C rather than wait out \
-         the timeout, or keep waiting if it clears in the window.",
-        crate::client::EDGE_BLOCK
-    ))
+    Some(
+        "warning: Wealthfront's answer to this sign-in is possibly a bot check or edge block. \
+         Press Ctrl-C rather than wait out the timeout, or keep waiting if it clears in the \
+         window."
+            .to_string(),
+    )
 }
 
 /// [`confirm_session`], with the client that makes the read built by
 /// `client` from the candidate's cookie header, so a unit test can point it
 /// at a loopback server ([`Wf::from_bundle_at`]). A capture with no jar ends
-/// the wait before any client is built.
+/// the wait before any client is built. Also says whether an edge block answered.
 fn confirm_session_with(
     candidate: &Captured,
     client: impl FnOnce(&str) -> Result<Wf, CliError>,
-) -> Confirm {
+) -> (Confirm, bool) {
     let Some(bundle) = candidate.cookie_header() else {
-        return Confirm::Fail(no_jar());
+        return (Confirm::Fail(no_jar()), false);
     };
-    me_verdict(client(bundle.expose()).and_then(|wf| wf.me()))
+    me_verdict(
+        client(bundle.expose())
+            .map_err(ReadError::from)
+            .and_then(|wf| wf.read_me()),
+    )
 }
 
-/// What the `/capitan/v1/me` read says about a candidate session.
-fn me_verdict(me: Result<Value, CliError>) -> Confirm {
+/// What the `/capitan/v1/me` read says about a candidate session, and whether an edge
+/// block said it.
+fn me_verdict(me: Result<Value, ReadError>) -> (Confirm, bool) {
+    let refused =
+        |why: String| Confirm::NotYet(format!("GET {} was refused: {why}", endpoints::ME));
     match me {
-        // The account object, the only answer `Wf::me` lets through.
-        Ok(_) => Confirm::Ready,
+        // The account object, the only answer `Wf::read_me` lets through.
+        Ok(_) => (Confirm::Ready, false),
         // The owner may not have finished signing in, or a bot check may be in the
         // way. A timeout gives what the read was told: the client's own wording,
         // which holds a status and never a cookie value or the answer's body.
-        Err(CliError::Auth(why)) => {
-            Confirm::NotYet(format!("GET {} was refused: {why}", endpoints::ME))
-        }
+        Err(e @ ReadError::EdgeBlock { .. }) => (refused(CliError::from(e).to_string()), true),
+        Err(ReadError::Failed(CliError::Auth(why))) => (refused(why), false),
         // A 429, a 200 that is not the account object, the network, a
         // cookie or CSRF bug: waiting will not fix it, so it ends the wait
         // instead of blaming a slow sign-in.
-        Err(e) => Confirm::Fail(CliError::Upstream(format!(
-            "session validation failed during the browser login: {e}"
-        ))),
+        Err(ReadError::Failed(e)) => (
+            Confirm::Fail(CliError::Upstream(format!(
+                "session validation failed during the browser login: {e}"
+            ))),
+            false,
+        ),
     }
 }
 
@@ -1242,7 +1274,7 @@ mod tests {
         F: Fn(&str) -> String + Send + 'static,
     {
         let (base, server) = loopback::serve(connections, respond);
-        let verdict =
+        let (verdict, _) =
             confirm_session_with(&captured_jar(), |bundle| Wf::from_bundle_at(base, bundle));
         (verdict, server.join().expect("server thread"))
     }
@@ -1304,7 +1336,7 @@ mod tests {
         for (case, candidate) in [("a bare capture", &bare), ("a named _wfsid", &named_only)] {
             for verdict in [
                 confirm_session(candidate, true, &AtomicBool::new(false)),
-                confirm_session_with(candidate, |_| panic!("{case}: no client without a jar")),
+                confirm_session_with(candidate, |_| panic!("{case}: no client without a jar")).0,
             ] {
                 match verdict {
                     Confirm::Fail(err) => {
@@ -1411,69 +1443,69 @@ mod tests {
         }
     }
 
-    /// The hook's answer to one read of `status` and `page`.
-    fn answer_to(status: &'static str, content_type: &'static str, page: &'static str) -> Confirm {
-        confirm_against(1, move |_| {
+    /// The hook's answer to one read of `status` and `page`, and whether an edge block
+    /// gave it.
+    fn answer_to(
+        status: &'static str,
+        content_type: &'static str,
+        page: &'static str,
+    ) -> (Confirm, bool) {
+        let (base, server) = loopback::serve(1, move |_| {
             loopback::response(status, &[&format!("Content-Type: {content_type}")], page)
-        })
-        .0
+        });
+        let answer =
+            confirm_session_with(&captured_jar(), |bundle| Wf::from_bundle_at(base, bundle));
+        server.join().expect("server thread");
+        answer
     }
 
     /// An edge block warns once per window, whatever the polls after it answer.
     #[test]
     fn an_edge_block_warns_once_per_window() {
         let warned = AtomicBool::new(false);
-        let block = || answer_to("403 Forbidden", "text/html", "<html></html>");
-        let first = edge_block_warning(&warned, &block(), false).expect("the first block warns");
+        let block = || answer_to("403 Forbidden", "text/html", "<html></html>").1;
+        let first = edge_block_warning(&warned, block(), false).expect("the first block warns");
         assert!(
             first.contains("possibly a bot check or edge block"),
             "{first}"
         );
         assert!(first.contains("Ctrl-C"), "{first}");
-        assert_eq!(edge_block_warning(&warned, &block(), false), None);
-        assert_eq!(edge_block_warning(&warned, &block(), false), None);
+        assert_eq!(edge_block_warning(&warned, block(), false), None);
+        assert_eq!(edge_block_warning(&warned, block(), false), None);
 
         // Another window has its own state.
-        assert!(edge_block_warning(&AtomicBool::new(false), &block(), false).is_some());
+        assert!(edge_block_warning(&AtomicBool::new(false), block(), false).is_some());
     }
 
     /// `-q` suppresses the warning.
     #[test]
     fn a_quiet_sign_in_is_not_warned_of_an_edge_block() {
         let warned = AtomicBool::new(false);
-        let block = answer_to("403 Forbidden", "text/html", "<html></html>");
-        assert!(matches!(block, Confirm::NotYet(_)), "{block:?}");
-        assert_eq!(edge_block_warning(&warned, &block, true), None);
+        let (answer, block) = answer_to("403 Forbidden", "text/html", "<html></html>");
+        assert!(matches!(answer, Confirm::NotYet(_)), "{answer:?}");
+        assert_eq!(edge_block_warning(&warned, block, true), None);
     }
 
     /// A stale cookie in a kept profile answers a 401 or a plain 403 before the owner
-    /// has signed in, so those stay silent, as does a login page. None of them uses up
-    /// the warning, so a block after them still earns it.
+    /// has signed in, so those stay silent, as does a login page, even one holding a
+    /// challenge's words. None of them uses up the warning, so a block after them still
+    /// earns it.
     #[test]
     fn a_refusal_that_is_not_block_shaped_stays_silent() {
         let warned = AtomicBool::new(false);
+        let login_page = include_str!("../../tests/fixtures/login-page-with-challenge-words.html");
         for (status, content_type, body) in [
             ("401 Unauthorized", "application/json", ""),
             ("403 Forbidden", "application/json", ""),
             ("200 OK", "text/html", "<!doctype html>"),
+            ("200 OK", "text/html", login_page),
         ] {
-            let answer = answer_to(status, content_type, body);
+            let (answer, block) = answer_to(status, content_type, body);
             assert!(matches!(answer, Confirm::NotYet(_)), "{status}: {answer:?}");
-            assert_eq!(
-                edge_block_warning(&warned, &answer, false),
-                None,
-                "{status}"
-            );
+            assert_eq!(edge_block_warning(&warned, block, false), None, "{status}");
         }
-        let block = answer_to("403 Forbidden", "text/html", "<html></html>");
-        assert!(edge_block_warning(&warned, &block, false).is_some());
-    }
-
-    /// Only a refusal can warn.
-    #[test]
-    fn only_a_not_yet_answer_can_warn_of_an_edge_block() {
-        let warned = AtomicBool::new(false);
-        assert_eq!(edge_block_warning(&warned, &Confirm::Ready, false), None);
+        let (_, block) = answer_to("403 Forbidden", "text/html", "<html></html>");
+        assert!(edge_block_warning(&warned, block, false).is_some());
     }
 
     /// What waiting will not fix ends the wait: a 404, a rate limit, a
@@ -1551,7 +1583,7 @@ mod tests {
             format!("http://{}", listener.local_addr().unwrap())
         };
         assert_ends_the_wait(
-            confirm_session_with(&captured_jar(), |bundle| Wf::from_bundle_at(closed, bundle)),
+            confirm_session_with(&captured_jar(), |bundle| Wf::from_bundle_at(closed, bundle)).0,
             "a refused connection",
         );
         assert_ends_the_wait(
@@ -1559,7 +1591,8 @@ mod tests {
                 Err(CliError::Usage(
                     "WFR_BASE_URL must be a plain http(s) URL".into(),
                 ))
-            }),
+            })
+            .0,
             "a client that cannot be built",
         );
     }
@@ -1633,18 +1666,45 @@ mod tests {
         }
     }
 
+    /// A login result always says whether a read accepted the session, and here one did.
+    #[test]
+    fn a_login_result_says_a_read_verified_it() {
+        let cfg = Config {
+            username: Some("user@example.com".into()),
+            account: Some("dummy-account".into()),
+        };
+        let result = login_result(&cfg, AuthMethod::BrowserSession);
+        assert_eq!(result["schema"], "auth-status/v1");
+        assert_eq!(result["authenticated"], true);
+        assert_eq!(result["method"], "browser-session");
+        assert_eq!(result["account"], "dummy-account");
+        assert_eq!(result["verified"], true);
+        assert_eq!(login_result(&cfg, AuthMethod::Password)["verified"], true);
+    }
+
     /// The `/capitan/v1/me` answer, mapped one to one from the embedded
     /// capture: a session keeps the tab for the read, a signed-out answer
     /// keeps waiting, anything else ends the wait as exit 5.
     #[test]
     fn the_me_read_decides_the_capture() {
-        assert!(matches!(me_verdict(Ok(json!({}))), Confirm::Ready));
+        assert!(matches!(me_verdict(Ok(json!({}))), (Confirm::Ready, false)));
 
-        match me_verdict(Err(CliError::Auth("session expired".into()))) {
-            Confirm::NotYet(reason) => {
+        match me_verdict(Err(CliError::Auth("session expired".into()).into())) {
+            (Confirm::NotYet(reason), false) => {
                 assert_eq!(reason, "GET /capitan/v1/me was refused: session expired");
             }
             other => panic!("an auth error must keep waiting: {other:?}"),
+        }
+
+        match me_verdict(Err(ReadError::EdgeBlock { status: 403 })) {
+            (Confirm::NotYet(reason), true) => {
+                assert!(
+                    reason.starts_with("GET /capitan/v1/me was refused: "),
+                    "{reason}"
+                );
+                assert!(reason.contains("possibly a bot check"), "{reason}");
+            }
+            other => panic!("an edge block must keep waiting and say so: {other:?}"),
         }
 
         for e in [
@@ -1654,7 +1714,7 @@ mod tests {
             CliError::Other("connection reset".into()),
         ] {
             let cause = e.to_string();
-            let Confirm::Fail(err) = me_verdict(Err(e)) else {
+            let (Confirm::Fail(err), false) = me_verdict(Err(e.into())) else {
                 panic!("{cause} must end the wait");
             };
             assert_eq!(err.exit_code(), 5, "{cause}");

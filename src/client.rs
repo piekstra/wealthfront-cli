@@ -414,12 +414,17 @@ impl Wf {
     }
 
     pub fn get_json(&self, path: &str) -> Result<Value, CliError> {
+        self.read_json(path).map_err(CliError::from)
+    }
+
+    /// [`Wf::get_json`], saying whether an edge block answered.
+    fn read_json(&self, path: &str) -> Result<Value, ReadError> {
         let req = self
             .http
             .get(self.url(path))
             .header("Accept", "application/json");
-        let resp = self.with_csrf(req).send()?;
-        let out = self.handle(resp, path);
+        let resp = self.with_csrf(req).send().map_err(CliError::from)?;
+        let out = self.read_response(resp, path);
         if out.is_ok() {
             self.sync_session();
         }
@@ -433,13 +438,19 @@ impl Wf {
     /// 401 `AUTHENTICATION_REQUIRED`), and a status code alone is never
     /// success.
     pub fn me(&self) -> Result<Value, CliError> {
-        match self.get_json(endpoints::ME)? {
+        self.read_me().map_err(CliError::from)
+    }
+
+    /// [`Wf::me`], saying whether an edge block answered.
+    pub fn read_me(&self) -> Result<Value, ReadError> {
+        match self.read_json(endpoints::ME)? {
             Value::Object(fields) if !fields.is_empty() => Ok(Value::Object(fields)),
             other => Err(CliError::Upstream(format!(
                 "Wealthfront answered {} with {} where the account object was expected",
                 endpoints::ME,
                 json_kind(&other)
-            ))),
+            ))
+            .into()),
         }
     }
 
@@ -505,7 +516,7 @@ impl Wf {
             return Err(expired());
         }
         if status.as_u16() == 403 {
-            return Err(refused(&resp.text().unwrap_or_default()));
+            return Err(refused(&resp.text().unwrap_or_default()).into());
         }
         if status.as_u16() == 404 {
             return Err(CliError::NotFound(format!("{path} (HTTP 404)")));
@@ -629,24 +640,34 @@ impl Wf {
 
     /// Map a response onto the family exit codes.
     fn handle(&self, resp: reqwest::blocking::Response, path: &str) -> Result<Value, CliError> {
+        self.read_response(resp, path).map_err(CliError::from)
+    }
+
+    /// [`Wf::handle`], saying whether an edge block answered.
+    fn read_response(
+        &self,
+        resp: reqwest::blocking::Response,
+        path: &str,
+    ) -> Result<Value, ReadError> {
         let status = resp.status();
         let final_url = resp.url().to_string();
         if is_login_url(&final_url) {
-            return Err(expired());
+            return Err(expired().into());
         }
         if status.as_u16() == 401 {
-            return Err(expired());
+            return Err(expired().into());
         }
         if status.as_u16() == 403 {
             return Err(refused(&resp.text().unwrap_or_default()));
         }
         if status.as_u16() == 404 {
-            return Err(CliError::NotFound(format!("{path} (HTTP 404)")));
+            return Err(CliError::NotFound(format!("{path} (HTTP 404)")).into());
         }
         if status.as_u16() == 429 {
             return Err(CliError::Upstream(format!(
                 "Wealthfront rate-limited {path} (HTTP 429) — wait before retrying"
-            )));
+            ))
+            .into());
         }
         let text = resp
             .text()
@@ -655,9 +676,15 @@ impl Wf {
             return Err(CliError::Upstream(format!(
                 "Wealthfront HTTP {} for {path}",
                 status.as_u16()
-            )));
+            ))
+            .into());
         }
-        parse_json(&text, path)
+        if text.trim_start().starts_with('<') && html_reads_as_edge_block(&text) {
+            return Err(ReadError::EdgeBlock {
+                status: status.as_u16(),
+            });
+        }
+        Ok(parse_json(&text, path)?)
     }
 }
 
@@ -714,28 +741,46 @@ fn expired() -> CliError {
     CliError::Auth("Wealthfront session expired or invalid — run `wfr auth login`".into())
 }
 
+/// Why a read returned no data, typed where a caller acts on the kind: a sign-in's
+/// hook warns on an edge block, and everything else is the family's `CliError`.
+#[derive(Debug)]
+pub enum ReadError {
+    /// A bot check or an edge block's HTML page (exit 3, as any refusal is).
+    EdgeBlock {
+        status: u16,
+    },
+    Failed(CliError),
+}
+
+impl From<CliError> for ReadError {
+    fn from(e: CliError) -> Self {
+        ReadError::Failed(e)
+    }
+}
+
+impl From<ReadError> for CliError {
+    fn from(e: ReadError) -> Self {
+        match e {
+            ReadError::EdgeBlock { status } => edge_block(status),
+            ReadError::Failed(e) => e,
+        }
+    }
+}
+
 /// A 403: exit 3, as any refusal is. An HTML page is an edge's answer, so it reads
 /// as a possible bot check; otherwise it could be either.
-fn refused(body: &str) -> CliError {
+fn refused(body: &str) -> ReadError {
     if body.trim_start().starts_with('<') {
-        return edge_block(403);
+        return ReadError::EdgeBlock { status: 403 };
     }
     CliError::Auth(
         "Wealthfront refused the request (HTTP 403): the session may be invalid, or this may be \
          a bot check or edge block. If a sign-in just met this, wait before trying again, \
          since a retry now may hit the same block; otherwise run `wfr auth login \
-             --browser`"
+         --browser`"
             .into(),
     )
-}
-
-/// The words only [`edge_block`] uses, so a sign-in's hook can tell that refusal from
-/// the others, which all arrive as the same `Auth`.
-pub const EDGE_BLOCK: &str = "possibly a bot check or edge block";
-
-/// Whether a refusal's text is [`edge_block`]'s.
-pub fn names_an_edge_block(refusal: &str) -> bool {
-    refusal.contains(EDGE_BLOCK)
+    .into()
 }
 
 /// An HTML page from the edge where data was expected: a possible bot check, which
@@ -743,25 +788,31 @@ pub fn names_an_edge_block(refusal: &str) -> bool {
 /// as an expired session. It names the status only, never the page.
 fn edge_block(status: u16) -> CliError {
     CliError::Auth(format!(
-        "Wealthfront answered with an HTML page (HTTP {status}): {EDGE_BLOCK}, not an expired \
-         session. Wait before signing in again, since a retry now may \
+        "Wealthfront answered with an HTML page (HTTP {status}): possibly a bot check or edge \
+         block, not an expired session. Wait before signing in again, since a retry now may \
          hit the same block; then run `wfr auth login --browser`"
     ))
 }
 
 /// Whether an HTML page reads as a bot check or an edge block rather than a login
-/// page: a challenge's own wording, in the head of the page. Not a login page's
-/// reCAPTCHA or Turnstile, which every sign-in shows.
+/// page: a challenge's own wording, in the `<title>`, which must open in the first
+/// 8 KiB. Only the title counts, since a login page's body or scripts may hold the
+/// same words, and so may its own reCAPTCHA or Turnstile.
 fn html_reads_as_edge_block(text: &str) -> bool {
     let head = String::from_utf8_lossy(&text.as_bytes()[..text.len().min(8192)]).to_lowercase();
-    [
-        "just a moment",
-        "attention required",
-        "cf-chl",
-        "access denied",
-    ]
-    .iter()
-    .any(|marker| head.contains(marker))
+    let Some(open) = head.find("<title") else {
+        return false;
+    };
+    let Some(start) = head[open..].find('>') else {
+        return false;
+    };
+    let title = head[open + start + 1..]
+        .split("</title")
+        .next()
+        .unwrap_or_default();
+    ["just a moment", "attention required", "access denied"]
+        .iter()
+        .any(|marker| title.contains(marker))
 }
 
 /// What a JSON value is, for an error that must name the shape it got but
@@ -784,9 +835,7 @@ fn parse_json(text: &str, path: &str) -> Result<Value, CliError> {
         return Ok(Value::Null);
     }
     serde_json::from_str(text).map_err(|_| {
-        if text.trim_start().starts_with('<') && html_reads_as_edge_block(text) {
-            edge_block(200)
-        } else if text.trim_start().starts_with('<') {
+        if text.trim_start().starts_with('<') {
             CliError::Auth(
                 "Wealthfront returned HTML where JSON was expected (session expired) — \
                  run `wfr auth login`"
@@ -1225,5 +1274,152 @@ mod tests {
                 other => panic!("{body:?} must be an upstream error: {other:?}"),
             }
         }
+    }
+
+    /// Each challenge's title names itself, whatever its case.
+    #[test]
+    fn each_challenge_title_reads_as_an_edge_block() {
+        for title in [
+            "Just a moment...",
+            "JUST A MOMENT",
+            "Attention Required! | Cloudflare",
+            "Access denied",
+        ] {
+            let page = format!("<!DOCTYPE html><html><head><title>{title}</title></head></html>");
+            assert!(html_reads_as_edge_block(&page), "{title}");
+        }
+        assert!(html_reads_as_edge_block(
+            "<html><title data-x=\"1\">Just a moment</title></html>"
+        ));
+    }
+
+    const LOGIN_PAGE_WITH_CHALLENGE_WORDS: &str =
+        include_str!("../tests/fixtures/login-page-with-challenge-words.html");
+
+    /// A login page may hold a challenge's words, in its body, a script or a meta tag,
+    /// and its own bot check. Only the title counts, so none of it reads as a block.
+    #[test]
+    fn a_login_page_holding_challenge_words_is_not_an_edge_block() {
+        let page = LOGIN_PAGE_WITH_CHALLENGE_WORDS;
+        for word in [
+            "access denied",
+            "cf-chl",
+            "just a moment",
+            "attention required",
+        ] {
+            assert!(
+                page.to_lowercase().contains(word),
+                "the fixture holds {word}"
+            );
+        }
+        assert!(!html_reads_as_edge_block(page));
+        assert!(!html_reads_as_edge_block(
+            "<html>access denied, cf-chl</html>"
+        ));
+        assert!(!html_reads_as_edge_block("<html><title"));
+    }
+
+    /// A title that opens past the first 8 KiB is not read.
+    #[test]
+    fn a_challenge_title_past_the_window_is_not_read() {
+        let padding = " ".repeat(8192);
+        let page = format!("<html>{padding}<title>Just a moment...</title></html>");
+        assert!(!html_reads_as_edge_block(&page));
+        // A multi-byte character across the cut does not panic.
+        let page = format!("<html>{}é<title>Just a moment</title>", "a".repeat(8185));
+        assert!(!html_reads_as_edge_block(&page));
+    }
+
+    /// An HTML 403 is an edge's answer; any other 403 names both causes.
+    #[test]
+    fn refused_tells_an_html_body_from_a_json_one() {
+        for body in ["<html></html>", "  <!DOCTYPE html>"] {
+            assert!(
+                matches!(refused(body), ReadError::EdgeBlock { status: 403 }),
+                "{body}"
+            );
+        }
+        for body in [r#"{"error":"forbidden"}"#, ""] {
+            let err = refused(body);
+            assert!(matches!(err, ReadError::Failed(_)), "{body}: {err:?}");
+            let err = CliError::from(err);
+            assert_eq!(err.exit_code(), 3, "{body}");
+            let text = err.to_string();
+            assert!(
+                text.contains("the session may be invalid"),
+                "{body}: {text}"
+            );
+            assert!(
+                text.contains("may be a bot check or edge block"),
+                "{body}: {text}"
+            );
+        }
+    }
+
+    /// Both the JSON read and the document read, one answer each.
+    fn both_reads(status: &'static str, body: &'static str) -> [CliError; 2] {
+        let answering = || {
+            let (base, server) = crate::loopback::serve(1, move |_| {
+                crate::loopback::response(status, &["Content-Type: text/html"], body)
+            });
+            (Wf::with_base(base).expect("client builds"), server)
+        };
+        let (wf, server) = answering();
+        let read = wf.get_json("/x").unwrap_err();
+        server.join().expect("server thread");
+        let (wf, server) = answering();
+        let document = wf.download("/x.pdf").unwrap_err();
+        server.join().expect("server thread");
+        [read, document]
+    }
+
+    /// `Wf::handle` and the document read tell an HTML 403 from any other, and neither
+    /// reads as a plain expiry.
+    #[test]
+    fn a_403_reads_as_a_block_or_as_both_causes_on_every_read() {
+        for err in both_reads("403 Forbidden", "<html>dummy-body</html>") {
+            assert_eq!(err.exit_code(), 3);
+            let text = err.to_string();
+            assert!(
+                text.contains("possibly a bot check or edge block"),
+                "{text}"
+            );
+            assert!(text.contains("not an expired session"), "{text}");
+            assert!(!text.contains("dummy-body"), "{text}");
+        }
+        for err in both_reads("403 Forbidden", r#"{"error":"forbidden"}"#) {
+            assert_eq!(err.exit_code(), 3);
+            let text = err.to_string();
+            assert!(text.contains("the session may be invalid"), "{text}");
+            assert!(!text.contains("session expired"), "{text}");
+        }
+        for err in both_reads("401 Unauthorized", "") {
+            assert_eq!(err.exit_code(), 3);
+            assert!(err.to_string().contains("session expired"), "{err}");
+        }
+    }
+
+    /// Behind a 200, `Wf::handle` calls a challenge's title a block and a login page
+    /// holding the same words an expired session, typing only the first.
+    #[test]
+    fn a_read_types_a_challenge_behind_a_200() {
+        let read = |body: &'static str| {
+            let (base, server) = crate::loopback::serve(1, move |_| {
+                crate::loopback::response("200 OK", &["Content-Type: text/html"], body)
+            });
+            let out = Wf::with_base(base).expect("client builds").read_json("/x");
+            server.join().expect("server thread");
+            out.unwrap_err()
+        };
+        let err = read("<html><title>Attention Required!</title></html>");
+        assert!(
+            matches!(err, ReadError::EdgeBlock { status: 200 }),
+            "{err:?}"
+        );
+        let err = read(LOGIN_PAGE_WITH_CHALLENGE_WORDS);
+        assert!(matches!(err, ReadError::Failed(_)), "{err:?}");
+        let err = CliError::from(err);
+        assert_eq!(err.exit_code(), 3);
+        assert!(err.to_string().contains("session expired"), "{err}");
     }
 }

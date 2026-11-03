@@ -219,9 +219,11 @@ that records each request. Point the client at it with an explicit base
 would hand over, and `confirm_session_with` takes the client that makes the
 `/capitan/v1/me` read, so each `Confirm` outcome is pinned against the loopback
 server: no jar fails before any read, a non-empty JSON object is `Ready` and the
-read sends the jar with `x-csrf-token`, a refused answer is `NotYet` with the refusal's own text, which names a 403 HTML page as a possible bot check, and
-anything else (an empty body, `{}` or `null` 200 included) ends the wait as exit
-5.
+read sends the jar with `x-csrf-token`, a refused answer is `NotYet` with the refusal's own text,
+which names a 403 HTML page as a possible bot check, and anything else (an empty
+body, `{}` or `null` 200 included) ends the wait as exit 5. The edge block is a
+typed `ReadError`, never matched on its wording, and only a page's `<title>` can
+call a 200 a challenge.
 
 **The logout's browser step is tested on a temp dir.** `run_logout` takes the
 removal as a closure; its tests fill it with `forget_profile_in` (the same

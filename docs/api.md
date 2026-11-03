@@ -510,7 +510,7 @@ the page list and the cookies are browser-level reads.
 | Host | pages on exactly `www.wealthfront.com` (`https`, default port), parsed and compared label for label. The apex, other wealthfront.com hosts and look-alikes are never read or closed. |
 | Gate | the `_wfsid` cookie, as the browser would send it to `https://www.wealthfront.com/` |
 | The session | every cookie the browser would send to `wealthfront.com` or a host under it, `HttpOnly` included, as one `k=v; k=v` header: the jar §3.4 needs |
-| Confirm | on each 3-second poll, once the gate passes and before the tab closes, one `GET /capitan/v1/me` with that jar. A non-empty JSON object closes the tab and hands the jar over. A refused answer (401, 403, a redirect to the sign-in or 2FA page, or HTML where JSON was expected) keeps waiting, and a timeout gives its own text. A 403's HTML page, or a challenge's page behind a 200, names itself as a possible bot check or edge block, not an expired session; the text holds a status, never a cookie value or the page. The first such block in a window also prints one warning on stderr, unless `-q`, saying the owner can press Ctrl-C rather than wait out the timeout; the wait goes on, since the window can still clear. A 401 or a plain 403 prints nothing, because a stale cookie in a kept profile answers that way before the owner has signed in. Anything else ends the login as exit 5: 404, 429, 5xx, a 200 that is empty, `null`, not JSON or JSON other than an object (no signed-out answer has that shape; a visitor gets 401), the network, a cookie or CSRF bug, `session validation failed during the browser login: …`. |
+| Confirm | on each 3-second poll, once the gate passes and before the tab closes, one `GET /capitan/v1/me` with that jar. A non-empty JSON object closes the tab and hands the jar over. A refused answer (401, 403, a redirect to the sign-in or 2FA page, or HTML where JSON was expected) keeps waiting, and a timeout gives its own text. A 403's HTML page, or a page behind a 200 whose `<title>` is a challenge's, names itself as a possible bot check or edge block, not an expired session; the text holds a status, never a cookie value or the page. The first such block in a window also prints one warning on stderr, unless `-q`, saying the owner can press Ctrl-C rather than wait out the timeout; the wait goes on, since the window can still clear. A 401 or a plain 403 prints nothing, because a stale cookie in a kept profile answers that way before the owner has signed in. Anything else ends the login as exit 5: 404, 429, 5xx, a 200 that is empty, `null`, not JSON or JSON other than an object (no signed-out answer has that shape; a visitor gets 401), the network, a cookie or CSRF bug, `session validation failed during the browser login: …`. |
 | Stored | the confirmed jar, unchanged, under keychain `piekstra.wfr/session`: the bundle the password login stores and every read seeds from |
 
 Each Confirm outcome is tested offline. The unit tests in
@@ -555,6 +555,11 @@ logged in — session captured from the browser
 | Ctrl-C (`browser login canceled`), no Chrome found, or Chrome failed to start | 1 |
 | The kept profile is in use (another sign-in, or a Chrome still running in it) or needs repair (a symlink, another user's, not `0700`). The message names the path and what to do. `wfr auth logout` refuses the same way, after attempting every other step, and its error says what was cleared and what remains | 1 |
 | A second Ctrl-C, when the first did not end the wait: Chrome is killed, and a scratch profile deleted | 130 |
+
+**The login result.** `wfr auth login --json` prints an `auth-status/v1` result
+on stdout, on every path that stores a session, with `verified: true`. Every path
+stores a session only after `GET /capitan/v1/me` accepted it, so `verified` is
+never `false`.
 
 **The surface around it.** `--browser` reads only `--fresh-profile`: with
 `--stdin`, `--from-env`, `--code`, `--no-verify`, `--overwrite`,
