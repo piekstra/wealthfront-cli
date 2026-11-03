@@ -494,7 +494,7 @@ sum. It introduces no new endpoint:
 **Status.** The flow was VERIFIED-LIVE on 2026-08-18 with a Chrome capture
 embedded in this repo. It now runs on cli-common's shared `pk-cli-browser`
 crate
-([cli-common DESIGN.md §2.2](https://github.com/piekstra/cli-common/blob/v0.14.0/DESIGN.md)),
+([cli-common DESIGN.md §2.2](https://github.com/piekstra/cli-common/blob/v0.15.1/DESIGN.md)),
 which makes the same reads and stores the same session. That build is
 UNVERIFIED-LIVE until the owner's next sign-in through it.
 
