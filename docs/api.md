@@ -492,11 +492,11 @@ sum. It introduces no new endpoint:
 ### 3.6 Browser sign-in — `wfr auth login --browser`
 
 **Status.** The flow was VERIFIED-LIVE on 2026-08-18 with a Chrome capture
-embedded in this repo. It now runs on cli-common's shared `pk-cli-browser`
-crate
-([cli-common DESIGN.md §2.2](https://github.com/piekstra/cli-common/blob/v0.16.0/DESIGN.md)),
-which makes the same reads and stores the same session. That build is
-UNVERIFIED-LIVE until the owner's next sign-in through it.
+embedded in this repo. It now runs on cli-common's shared `pk-cli-browser` crate
+([cli-common DESIGN.md
+§2.2](https://github.com/piekstra/cli-common/blob/v0.19.0/DESIGN.md)), which
+makes the same reads and stores the same session. That build is UNVERIFIED-LIVE
+until the owner's next sign-in through it.
 
 The owner signs in on Wealthfront's own page in a plain Chrome window. The
 window has a debug port and the profile `wfr` keeps (below), and none of the
@@ -519,24 +519,25 @@ constructors and answer the `/capitan/v1/me` read from a loopback server
 (`src/loopback.rs`). They also check that the read sends the jar and the
 decoded `x-csrf-token`.
 
-The crate stops Chrome on every exit. The profile stays on disk at `<data
-dir>/piekstra.wfr/browser-profile`, `0700`, and is refused when it is a symlink,
-another user's or any other mode. Wealthfront's own cookies carry over, so a
-later sign-in should need less input. **UNVERIFIED-LIVE:** no second sign-in has
-run in a kept profile yet, so how far Wealthfront lets one go (and whether its
-2FA prompt still appears) is unknown. `--fresh-profile` runs one sign-in in a
-scratch profile instead: `0700`, created exclusively under an unpredictable name
-in the temp dir, and deleted on exit. `wfr auth logout` removes the kept profile
-as its last step. It is a full Chrome profile: SECURITY.md lists what it holds.
-The capture reads cookies only, never `localStorage`, and a jar left from an
-earlier sign-in passes only if `GET /capitan/v1/me` still accepts it, so a stale
-session keeps the wait going until the owner signs in. A sign-in that fails once
-Chrome may have used the kept profile, whatever its exit code, ends by saying
-the profile stays on disk and `wfr auth logout` removes it, and clears the
-stored session too. A launch refused before that says nothing about it.
-`WFR_CHROME` points at a Chrome binary. Without it, the crate looks in the
-standard macOS paths (Chrome, Chromium, Edge, also under `~/Applications`), then
-the Linux ones.
+The crate stops Chrome on every exit, and asks a kept profile's Chrome to quit
+first, so a cookie set just before the close is on disk for the next sign-in.
+The profile stays on disk at `<data dir>/piekstra.wfr/browser-profile`, `0700`,
+and is refused when it is a symlink, another user's or any other mode.
+Wealthfront's own cookies carry over, so a later sign-in should need less input.
+**UNVERIFIED-LIVE:** no second sign-in has run in a kept profile yet, so how far
+Wealthfront lets one go (and whether its 2FA prompt still appears) is unknown.
+`--fresh-profile` runs one sign-in in a scratch profile instead: `0700`, created
+exclusively under an unpredictable name in the temp dir, and deleted on exit.
+`wfr auth logout` removes the kept profile as its last step. It is a full Chrome
+profile: SECURITY.md lists what it holds. The capture reads cookies only, never
+`localStorage`, and a jar left from an earlier sign-in passes only if `GET
+/capitan/v1/me` still accepts it, so a stale session keeps the wait going until
+the owner signs in. A sign-in that fails once Chrome may have used the kept
+profile, whatever its exit code, ends by saying the profile stays on disk and
+`wfr auth logout` removes it, and clears the stored session too. A launch
+refused before that says nothing about it. `WFR_CHROME` points at a Chrome
+binary. Without it, the crate looks in the standard macOS paths (Chrome,
+Chromium, Edge, also under `~/Applications`), then the Linux ones.
 
 On stderr, unless `-q`:
 
@@ -558,11 +559,13 @@ logged in — session captured from the browser
 **The surface around it.** `--browser` takes no other credential source: with
 `--stdin` or `--from-env` it is exit 2 from clap, before anything reads the
 keychain or the network. `wfr info` gives `wfr auth login --browser` as its
-`login_hint`. `auth status` reports `method: "password"` whichever login stored
-the session, although cli-common DESIGN.md §2.2 asks for `browser-session`
-after a browser sign-in. Both logins store the same `k=v; k=v` cookie string
-under `session`, so nothing stored says which one ran, and recording it would
-mean new state beside the session.
+`login_hint`. `auth status` reports `browser_profile`, whether a profile is kept
+and not whether it is signed in, and nothing while `WFR_KEYCHAIN_SERVICE` names
+a service. It reports `method: "password"` whichever login stored the session,
+although cli-common DESIGN.md §2.2 asks for `browser-session` after a browser
+sign-in. Both logins store the same `k=v; k=v` cookie string under `session`, so
+nothing stored says which one ran, and recording it would mean new state beside
+the session.
 
 **Traps.**
 

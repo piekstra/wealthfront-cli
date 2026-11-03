@@ -148,6 +148,31 @@ fn fresh_profile_requires_the_browser_flag() {
         .stderr(predicate::str::contains("--browser"));
 }
 
+/// `--fresh-profile` alone in a login with another flag would be ignored, so the
+/// family's flags refuse it at parse time, whichever flag is beside it. Should
+/// that ever parse, the empty service and temp `HOME` keep the command off the
+/// real keychain items and the real profile.
+#[test]
+fn fresh_profile_without_browser_is_refused_beside_every_login_flag() {
+    let home = std::env::temp_dir().join(format!("wfr-fresh-alone-{}", std::process::id()));
+    std::fs::create_dir_all(&home).unwrap();
+    for flags in [
+        ["--code", "000000"].as_slice(),
+        ["--stdin"].as_slice(),
+        ["--from-env", "WFR_TEST_UNSET"].as_slice(),
+    ] {
+        wfr()
+            .env("HOME", &home)
+            .env("WFR_KEYCHAIN_SERVICE", "piekstra.wfr-test-empty")
+            .args(["auth", "login", "--fresh-profile"])
+            .args(flags)
+            .assert()
+            .code(2)
+            .stderr(predicate::str::contains("--browser"));
+    }
+    std::fs::remove_dir_all(&home).unwrap();
+}
+
 /// The summary `auth --help` lists stays one line; the detail of a logout that
 /// cannot finish is in `auth logout --help`.
 #[test]

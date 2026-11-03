@@ -1,5 +1,23 @@
 # Changelog
 
+## v0.3.1 — 2026-11-03
+
+Moves to cli-common v0.19.0. The minimum Rust version is now 1.89.
+
+- A sign-in in the kept profile now asks Chrome to quit before stopping it, so a
+  remember-this-device cookie set just before the window closes is on disk for
+  the next sign-in. Measured by cli-common in headless Chrome only: on v0.16.0 a
+  cookie written just before the close survived 6 of 40 runs, and on v0.19.0 40
+  of 40. A stuck Chrome can hold `wfr` for up to 11 s, up from 6 s.
+- `wfr auth status` reports `browser_profile` within `auth-status/v1`: whether a
+  profile is kept, not whether it is signed in. A profile that needs repair is a
+  warning on stderr and leaves the field out.
+- While `WFR_KEYCHAIN_SERVICE` names a service, `wfr auth status` reads nothing
+  about the real profile, leaves `browser_profile` out and says so on stderr.
+- `wfr auth login --fresh-profile` without `--browser` is a usage error (exit 2)
+  whichever other flag is beside it. It used to parse beside `--stdin` or
+  `--from-env`, and the flag was ignored.
+
 ## v0.3.0 — 2026-11-03
 
 Moves to cli-common v0.16.0. A browser sign-in now runs in a profile `wfr`

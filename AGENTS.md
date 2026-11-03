@@ -6,7 +6,7 @@ Canonical guide for humans and agents. `CLAUDE.md` points here.
 
 A [piekstra CLI family](https://github.com/piekstra/cli-common) member
 (`piekstra-cli/1`) for Wealthfront. Rust, clap-derive, `pk-cli-*` crates pinned
-to tag **v0.16.0**. Binary is `wfr`; crate is `wealthfront-cli`.
+to tag **v0.19.0**. Binary is `wfr`; crate is `wealthfront-cli`.
 
 **Read-only.** Nothing here moves money or mutates the account. If that ever
 changes, the claim in README, SECURITY.md and this file must change in the
@@ -124,10 +124,12 @@ keyring so does the session cookie (SECURITY.md). A failed sign-in leaves it.
 The whole sign-in runs inside `noting_kept_profile`, which adds the note to
 every failure except the refusals before Chrome uses the profile. Every logout
 step is attempted, and a failed logout's error says what was cleared and what
-remains. `auth status` does not report the profile: cli-common v0.16.0 has no
-call for it, and wfr must not work out the path itself. The capture reads no
-`localStorage`; keep it that way, or a stale token bundle in the kept profile
-becomes readable on page load.
+remains. `auth status` reports it through `browser_profile_status`, a seam the
+tests fill with `profile_exists_in`: whether a profile is kept, not whether it
+is signed in. wfr must not work out the path itself. `clear_site_storage` stays
+off, since the capture reads only cookies and no token bundle is kept in site
+storage. The capture reads no `localStorage`; keep it that way, or a stale token
+bundle in the kept profile becomes readable on page load.
 
 **One JSON document per invocation.** If a command already emitted its DTO and
 then needs a nonzero exit, `std::process::exit` directly — returning an error
@@ -216,9 +218,11 @@ read sends the jar with `x-csrf-token`, a signed-out answer is `NotYet`, and
 anything else (an empty body, `{}` or `null` 200 included) ends the wait as exit
 5.
 
-**The logout's browser step is tested on a temp dir.** `run_logout` takes
-the removal as a closure; its tests fill it with `forget_profile_in` (the same
+**The logout's browser step is tested on a temp dir.** `run_logout` takes the
+removal as a closure; its tests fill it with `forget_profile_in` (the same
 feature) or a canned refusal, so no test can remove the owner's real profile.
+`auth status` has the same seam, `browser_profile_status`, filled with
+`profile_exists_in`.
 
 ## Fixtures and privacy
 
@@ -299,6 +303,7 @@ variable only renames which entry is read; it never carries a session. A service
 it names is a test namespace that must not read or change the real kept browser
 profile or config: `wfr auth logout` skips the removal and says so, `wfr auth
 login --browser` takes a scratch profile and says so (`scratch_profile_choice`),
-and `--forget` leaves the real config unless `--config` names a file
-(`keeps_real_config`). The config is loaded only in the commands that use it, so
-logout runs on a file that can't be parsed.
+`--forget` leaves the real config unless `--config` names a file
+(`keeps_real_config`), and `auth status` leaves `browser_profile` out and says
+so. The config is loaded only in the commands that use it, so logout runs on a
+file that can't be parsed.
