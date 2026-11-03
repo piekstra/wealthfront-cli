@@ -519,23 +519,24 @@ constructors and answer the `/capitan/v1/me` read from a loopback server
 (`src/loopback.rs`). They also check that the read sends the jar and the
 decoded `x-csrf-token`.
 
-The crate stops Chrome on every exit. The profile stays on disk at
-`<data dir>/piekstra.wfr/browser-profile`, `0700`, and is refused when it is a
-symlink, another user's or any other mode. Wealthfront's own cookies carry over,
-so a later sign-in should need less input. **UNVERIFIED-LIVE:** no second sign-in
-has run in a kept profile yet, so how far Wealthfront lets one go (and whether
-its 2FA prompt still appears) is unknown. `--fresh-profile` runs one sign-in in
-a scratch profile instead: `0700`, created exclusively under an unpredictable
-name in the temp dir, and deleted on exit. `wfr auth logout` removes the kept
-profile as its last step. It is a full Chrome profile: SECURITY.md lists what it
-holds. The capture reads cookies only, never `localStorage`, and a jar left from
-an earlier sign-in passes only if `GET /capitan/v1/me` still accepts it, so a
-stale session keeps the wait going until the owner signs in. Every failure of a
-sign-in in the kept profile, whatever its exit code, ends by saying the profile
-stays on disk and `wfr auth logout` removes it, and clears the stored session too.
+The crate stops Chrome on every exit. The profile stays on disk at `<data
+dir>/piekstra.wfr/browser-profile`, `0700`, and is refused when it is a symlink,
+another user's or any other mode. Wealthfront's own cookies carry over, so a
+later sign-in should need less input. **UNVERIFIED-LIVE:** no second sign-in has
+run in a kept profile yet, so how far Wealthfront lets one go (and whether its
+2FA prompt still appears) is unknown. `--fresh-profile` runs one sign-in in a
+scratch profile instead: `0700`, created exclusively under an unpredictable name
+in the temp dir, and deleted on exit. `wfr auth logout` removes the kept profile
+as its last step. It is a full Chrome profile: SECURITY.md lists what it holds.
+The capture reads cookies only, never `localStorage`, and a jar left from an
+earlier sign-in passes only if `GET /capitan/v1/me` still accepts it, so a stale
+session keeps the wait going until the owner signs in. A sign-in that fails once
+Chrome may have used the kept profile, whatever its exit code, ends by saying
+the profile stays on disk and `wfr auth logout` removes it, and clears the
+stored session too. A launch refused before that says nothing about it.
 `WFR_CHROME` points at a Chrome binary. Without it, the crate looks in the
-standard macOS paths (Chrome, Chromium, Edge, also under `~/Applications`),
-then the Linux ones.
+standard macOS paths (Chrome, Chromium, Edge, also under `~/Applications`), then
+the Linux ones.
 
 On stderr, unless `-q`:
 

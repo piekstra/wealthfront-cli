@@ -82,16 +82,20 @@ So:
 - One sign-in uses it at a time. A second, or a launch while a Chrome still runs
   in it, is refused (exit 1).
 - `wfr auth logout` removes it, and refuses while it is in use or when it is a
-  symlink or another user's. Every step of a logout is attempted, so a refusal or
-  a failed keychain or config step leaves the rest done. The error says what was
-  cleared and what remains, names the path and says how to finish, with the first
-  failure's exit code.
-- A sign-in that fails for any reason leaves it in place, possibly signed in: a
-  timeout, a closed window, Ctrl-C, a confirm read that ends the wait, a keychain
-  write that fails after the capture. The error says so and names `wfr auth
-  logout`, which removes it and clears the stored session too. A second Ctrl-C
-  kills Chrome with no such message. `wfr auth status` does not report it:
-  cli-common v0.16.0 has no call that says whether a profile exists.
+  symlink or another user's. Every step of a logout is attempted, so a refusal
+  or a failed keychain or config step leaves the rest done. The error says what
+  was cleared and what remains, names the path and says how to finish, with the
+  first failure's exit code. A logout does not parse the config, so a file that
+  can't be parsed stops nothing, and `--forget` removes it.
+- A sign-in that fails once Chrome may have used it leaves it in place, possibly
+  signed in: a timeout, a closed window, Ctrl-C, a confirm read that ends the
+  wait, a keychain write that fails after the capture. The error says so and
+  names `wfr auth logout`, which removes it and clears the stored session too. A
+  second Ctrl-C kills Chrome with no such message. A launch refused before
+  Chrome uses it (no Chrome, a profile in use or needing repair) says nothing
+  about it, since `auth logout` would refuse the same profile. `wfr auth status`
+  does not report it: cli-common v0.16.0 has no call that says whether a profile
+  exists.
 - A session cookie left in it from an earlier sign-in is not trusted alone: only
   a `GET /capitan/v1/me` that answers a non-empty account object accepts a
   session, so an unverified session cannot replace a working one.
@@ -114,13 +118,14 @@ URL needs. The Claude Desktop extension (`.mcpb`) takes no settings and so
 holds no credential of its own; on macOS its bundled binary needs the user's
 approval, once, to read the `piekstra.wfr` keychain item.
 
-`WFR_KEYCHAIN_SERVICE` renames the keychain service read and written, for
-tests and for checking the error paths against an empty service. It carries
-no secret. A service it names is a test namespace, and must not read or change
-the real kept browser profile. While it names one, `wfr auth logout` clears that
-service, leaves the real profile in place and says so, and `wfr auth login
---browser` uses a scratch profile, as with `--fresh-profile`, and says so in one
-line on stderr. A blank value names no service.
+`WFR_KEYCHAIN_SERVICE` renames the keychain service read and written, for tests
+and for checking the error paths against an empty service. It carries no secret.
+A service it names is a test namespace, and must not read or change the real
+kept browser profile or the real config. While it names one, `wfr auth logout`
+clears that service, leaves the real profile in place and says so, `wfr auth
+login --browser` uses a scratch profile, as with `--fresh-profile`, and says so
+in one line on stderr, and `auth logout --forget` leaves the real config and
+says so. A `--config` you name is still cleared. A blank value names no service.
 
 ## App-specific password — not usable for wfr's own login
 

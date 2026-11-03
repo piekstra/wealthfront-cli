@@ -16,14 +16,15 @@ keeps, where it used to run in a scratch profile deleted after every sign-in.
   with the crate's message while a sign-in or a Chrome is using the profile, or
   when the path is a symlink or another user's; the keychain items are cleared
   by then, and the error and `auth logout --help` say so.
-- `wfr auth logout` attempts every step even when one fails, and says what was
-  cleared and what remains, with the first failure's exit code.
+- `wfr auth logout` attempts every step even when one fails or the config can't
+  be parsed, and says what was cleared and what remains, with the first
+  failure's exit code. `--forget` clears a config that can't be parsed.
 - `GET /capitan/v1/me` answering `{}` no longer counts as signed in.
-- While `WFR_KEYCHAIN_SERVICE` names a service, `wfr auth logout` leaves the real
-  profile in place and `wfr auth login --browser` uses a scratch profile, and each
-  says so.
-- Every `--browser` failure in the kept profile says the profile stays and that
-  `wfr auth logout` removes it.
+- While `WFR_KEYCHAIN_SERVICE` names a service, `wfr auth logout` leaves the
+  real profile and config in place and `wfr auth login --browser` uses a scratch
+  profile, and each says so.
+- A `--browser` failure once Chrome may have used the kept profile says the
+  profile stays and that `wfr auth logout` removes it.
 - SECURITY.md and the README state what the kept profile holds: it is a full
   Chrome profile, with history, HTTP cache and site storage outside Chrome's
   cookie encryption, `0700` as their only protection, in a directory backups

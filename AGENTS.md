@@ -109,24 +109,25 @@ delegates the rest. Don't fork these. The browser sign-in is
 If it ever needs something the crate cannot express, add it to cli-common
 rather than embedding DevTools code here again.
 
-**The kept browser profile.** `--browser` runs Chrome in
-`~/Library/Application Support/piekstra.wfr/browser-profile` on macOS
+**The kept browser profile.** `--browser` runs Chrome in `~/Library/Application
+Support/piekstra.wfr/browser-profile` on macOS
 (`$XDG_DATA_HOME/piekstra.wfr/browser-profile`, or under `~/.local/share`, on
-Linux), which stays on disk so Wealthfront's remembered device and session
-carry over and a later sign-in often needs no input. `--fresh-profile` runs one
+Linux), which stays on disk so Wealthfront's remembered device and session carry
+over and a later sign-in often needs no input. `--fresh-profile` runs one
 sign-in in a scratch profile and leaves the kept one alone. `auth logout`
-removes the kept profile as its last step, through `run_logout`, whose
-removal is a closure: the binary binds `forget_profile(BIN)`, tests bind
-`forget_profile_in(&temp_dir, BIN)`. A test never reaches the real profile.
-It is a full Chrome profile: history with full URLs, the HTTP cache and site
+removes the kept profile as its last step, through `run_logout`, whose removal
+is a closure: the binary binds `forget_profile(BIN)`, tests bind
+`forget_profile_in(&temp_dir, BIN)`. A test never reaches the real profile. It
+is a full Chrome profile: history with full URLs, the HTTP cache and site
 storage sit outside Chrome's cookie encryption, and on Linux with no desktop
-keyring so does the session cookie (SECURITY.md). A failed sign-in leaves it, and
-every failure gets the note because the whole sign-in runs inside
-`noting_kept_profile`. Every logout step is attempted, and a failed
-logout's error says what was cleared and what remains. `auth status` does
-not report the profile: cli-common v0.16.0 has no call for it, and wfr must not
-work out the path itself. The capture reads no `localStorage`; keep it that way,
-or a stale token bundle in the kept profile becomes readable on page load.
+keyring so does the session cookie (SECURITY.md). A failed sign-in leaves it.
+The whole sign-in runs inside `noting_kept_profile`, which adds the note to
+every failure except the refusals before Chrome uses the profile. Every logout
+step is attempted, and a failed logout's error says what was cleared and what
+remains. `auth status` does not report the profile: cli-common v0.16.0 has no
+call for it, and wfr must not work out the path itself. The capture reads no
+`localStorage`; keep it that way, or a stale token bundle in the kept profile
+becomes readable on page load.
 
 **One JSON document per invocation.** If a command already emitted its DTO and
 then needs a nonzero exit, `std::process::exit` directly — returning an error
@@ -210,9 +211,10 @@ that records each request. Point the client at it with an explicit base
 `Captured::for_test` (the `test-util` feature) builds the capture the crate
 would hand over, and `confirm_session_with` takes the client that makes the
 `/capitan/v1/me` read, so each `Confirm` outcome is pinned against the loopback
-server: no jar fails before any read, a JSON object is `Ready` and the read
-sends the jar with `x-csrf-token`, a signed-out answer is `NotYet`, and
-anything else (an empty or `null` 200 included) ends the wait as exit 5.
+server: no jar fails before any read, a non-empty JSON object is `Ready` and the
+read sends the jar with `x-csrf-token`, a signed-out answer is `NotYet`, and
+anything else (an empty body, `{}` or `null` 200 included) ends the wait as exit
+5.
 
 **The logout's browser step is tested on a temp dir.** `run_logout` takes
 the removal as a closure; its tests fill it with `forget_profile_in` (the same
@@ -288,13 +290,15 @@ commit.
 `--json` and human output in sync, `docs/api.md` matching reality including its
 honesty labels, and no personal data anywhere in the diff.
 
-For the MCP tools, drive the installed `wfr mcp` over stdio with JSON-RPC
-lines (`initialize`, `tools/list`, `tools/call`); `wfr mcp --list-tools`
-prints the definitions without a credential. To see the sign-in error
-without opening the real session, set `WFR_KEYCHAIN_SERVICE` to a service
-that holds nothing: a missing keychain item is read without a prompt and
-fails as "not logged in". The variable only renames which entry is read; it
-never carries a session. A service it names is a test namespace that must not
-read or change the real kept browser profile: `wfr auth logout` skips the removal
-and says so, and `wfr auth login --browser` takes a scratch profile and says so
-(`scratch_profile_choice`).
+For the MCP tools, drive the installed `wfr mcp` over stdio with JSON-RPC lines
+(`initialize`, `tools/list`, `tools/call`); `wfr mcp --list-tools` prints the
+definitions without a credential. To see the sign-in error without opening the
+real session, set `WFR_KEYCHAIN_SERVICE` to a service that holds nothing: a
+missing keychain item is read without a prompt and fails as "not logged in". The
+variable only renames which entry is read; it never carries a session. A service
+it names is a test namespace that must not read or change the real kept browser
+profile or config: `wfr auth logout` skips the removal and says so, `wfr auth
+login --browser` takes a scratch profile and says so (`scratch_profile_choice`),
+and `--forget` leaves the real config unless `--config` names a file
+(`keeps_real_config`). The config is loaded only in the commands that use it, so
+logout runs on a file that can't be parsed.
