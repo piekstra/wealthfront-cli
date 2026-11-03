@@ -6,7 +6,7 @@ Canonical guide for humans and agents. `CLAUDE.md` points here.
 
 A [piekstra CLI family](https://github.com/piekstra/cli-common) member
 (`piekstra-cli/1`) for Wealthfront. Rust, clap-derive, `pk-cli-*` crates pinned
-to tag **v0.14.0**. Binary is `wfr`; crate is `wealthfront-cli`.
+to tag **v0.16.0**. Binary is `wfr`; crate is `wealthfront-cli`.
 
 **Read-only.** Nothing here moves money or mutates the account. If that ever
 changes, the claim in README, SECURITY.md and this file must change in the
@@ -30,7 +30,8 @@ The surface is split, and the split is not cosmetic:
   reCAPTCHA-safe), the owner signs in, and the CLI reads the wealthfront.com
   jar, confirms it with `GET /capitan/v1/me` before the tab closes, and stores
   it (`docs/api.md` §3.6). VERIFIED-LIVE with the embedded capture it replaced;
-  the shared-crate build awaits the owner's next sign-in. **`wfr auth login` (bare HTTP) also reaches credential validation
+  the shared-crate build awaits the owner's next sign-in. The window runs in a
+  Chrome profile `wfr` keeps on disk (see "The kept browser profile"). **`wfr auth login` (bare HTTP) also reaches credential validation
   + 2FA as of 2026-08-31** — the earlier "reCAPTCHA needs a browser" claim was
   wrong: a tokenless POST with the `login_xsrf` handshake reaches the login, and
   a wrong password now returns a credentials error, not a session error
@@ -82,7 +83,7 @@ unattended. Therefore:
 | Path | Role |
 |---|---|
 | `src/main.rs` | clap tree, dispatch, exit-code mapping |
-| `src/commands/auth.rs` | `auth login` (password + parked MFA, and `--browser`: the `pk-cli-browser` capture and its `/capitan/v1/me` confirm), `status`, `logout`, `set-credential` |
+| `src/commands/auth.rs` | `auth login` (password + parked MFA, and `--browser`: the `pk-cli-browser` capture and its `/capitan/v1/me` confirm), `status`, `logout` (keychain, then the kept browser profile), `set-credential` |
 | `src/client.rs` | HTTP, session (`x-csrf-token`), login `login_xsrf` handshake + MFA, `endpoints` — login **CAPTURED-LIVE & bare-HTTP-reachable** (2026-08-31), `me`/`accounts`/`activities`/`documents` reads all **VERIFIED-LIVE** |
 | `src/keychain.rs` | the four keychain account names and why each exists |
 | `src/config.rs` | non-secret settings |
@@ -107,6 +108,16 @@ delegates the rest. Don't fork these. The browser sign-in is
 `pk_cli_browser`'s: wfr only names the host, the cookies and the confirm read.
 If it ever needs something the crate cannot express, add it to cli-common
 rather than embedding DevTools code here again.
+
+**The kept browser profile.** `--browser` runs Chrome in
+`~/Library/Application Support/piekstra.wfr/browser-profile` on macOS
+(`$XDG_DATA_HOME/piekstra.wfr/browser-profile`, or under `~/.local/share`, on
+Linux), which stays on disk so Wealthfront's remembered device and session
+carry over and a later sign-in often needs no input. `--fresh-profile` runs one
+sign-in in a scratch profile and leaves the kept one alone. `auth logout`
+removes the kept profile as its last step, through `logout_browser`, whose
+removal is a closure: the binary binds `forget_profile(BIN)`, tests bind
+`forget_profile_in(&temp_dir, BIN)`. A test never reaches the real profile.
 
 **One JSON document per invocation.** If a command already emitted its DTO and
 then needs a nonzero exit, `std::process::exit` directly — returning an error
@@ -194,6 +205,10 @@ server: no jar fails before any read, a JSON object is `Ready` and the read
 sends the jar with `x-csrf-token`, a signed-out answer is `NotYet`, and
 anything else (an empty or `null` 200 included) ends the wait as exit 5.
 
+**The logout's browser step is tested on a temp dir.** `logout_browser` takes
+the removal as a closure; its tests fill it with `forget_profile_in` (the same
+feature) or a canned refusal, so no test can remove the owner's real profile.
+
 ## Fixtures and privacy
 
 **Fixtures here are synthetic, not scrubbed captures.** No real Wealthfront
@@ -238,7 +253,8 @@ and `bare_piped_stdin_without_flags_is_headless_too`.
 ## CI
 
 Linux only, on purpose. The suite is entirely offline, so a macOS runner would
-cost ~10x and exercise nothing extra. Releases are cut by pushing a `v*` tag
+cost ~10x and exercise nothing extra. Bump `Cargo.toml`, `Cargo.lock` and `packaging/mcpb/manifest.json` together and
+add a `CHANGELOG.md` section. Releases are cut by pushing a `v*` tag
 whose version matches `Cargo.toml` and `packaging/mcpb/manifest.json`
 (`.github/workflows/release.yml` refuses a mismatch). They build both Apple
 targets, `x86_64-unknown-linux-gnu` and `x86_64-pc-windows-msvc` as
@@ -269,4 +285,6 @@ prints the definitions without a credential. To see the sign-in error
 without opening the real session, set `WFR_KEYCHAIN_SERVICE` to a service
 that holds nothing: a missing keychain item is read without a prompt and
 fails as "not logged in". The variable only renames which entry is read; it
-never carries a session.
+never carries a session. It does not move the kept browser profile, so `wfr
+auth logout` under it still removes the real one: set `HOME` to a temp dir
+first.

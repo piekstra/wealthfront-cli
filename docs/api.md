@@ -494,14 +494,14 @@ sum. It introduces no new endpoint:
 **Status.** The flow was VERIFIED-LIVE on 2026-08-18 with a Chrome capture
 embedded in this repo. It now runs on cli-common's shared `pk-cli-browser`
 crate
-([cli-common DESIGN.md §2.2](https://github.com/piekstra/cli-common/blob/v0.14.0/DESIGN.md)),
+([cli-common DESIGN.md §2.2](https://github.com/piekstra/cli-common/blob/v0.16.0/DESIGN.md)),
 which makes the same reads and stores the same session. That build is
 UNVERIFIED-LIVE until the owner's next sign-in through it.
 
 The owner signs in on Wealthfront's own page in a plain Chrome window. The
-window has a debug port and a scratch profile, and none of the automation
-flags reCAPTCHA scores (§3.2). The CLI reads the session out of the window
-over the Chrome DevTools Protocol. It never evaluates anything in a page:
+window has a debug port and the profile `wfr` keeps (below), and none of the
+automation flags reCAPTCHA scores (§3.2). The CLI reads the session out of the
+window over the Chrome DevTools Protocol. It never evaluates anything in a page:
 the page list and the cookies are browser-level reads.
 
 | Step | What `browser_capture` (`src/commands/auth.rs`) does |
@@ -519,8 +519,15 @@ constructors and answer the `/capitan/v1/me` read from a loopback server
 (`src/loopback.rs`). They also check that the read sends the jar and the
 decoded `x-csrf-token`.
 
-The crate stops Chrome and deletes the profile on every exit. The profile is
-`0700`, created exclusively under an unpredictable name in the temp dir.
+The crate stops Chrome on every exit. The profile stays on disk at
+`<data dir>/piekstra.wfr/browser-profile`, `0700`, and is refused when it is a
+symlink, another user's or any other mode. Wealthfront's own cookies carry over,
+so a later sign-in should need less input. **UNVERIFIED-LIVE:** no second sign-in
+has run in a kept profile yet, so how far Wealthfront lets one go (and whether
+its 2FA prompt still appears) is unknown. `--fresh-profile` runs one sign-in in
+a scratch profile instead: `0700`, created exclusively under an unpredictable
+name in the temp dir, and deleted on exit. `wfr auth logout` removes the kept
+profile as its last step.
 `WFR_CHROME` points at a Chrome binary. Without it, the crate looks in the
 standard macOS paths (Chrome, Chromium, Edge, also under `~/Applications`),
 then the Linux ones.
@@ -539,7 +546,8 @@ logged in — session captured from the browser
 | 10 minutes pass, or the window is closed first. The message names what was seen (no `www.wealthfront.com` page open, `_wfsid` not set, or `GET /capitan/v1/me answered as signed out`, with the jar's cookie names, never values) and ends ``Re-run `wfr auth login --browser` and finish signing in.`` | 3 |
 | The confirm read failed for a reason other than sign-in | 5 |
 | Ctrl-C (`browser login canceled`), no Chrome found, or Chrome failed to start | 1 |
-| A second Ctrl-C, when the first did not end the wait: Chrome is killed and the profile deleted | 130 |
+| The kept profile is in use (another sign-in, or a Chrome still running in it) or needs repair (a symlink, another user's, not `0700`). The same goes for `wfr auth logout`, whose keychain items are cleared by then. The message names the path and what to do | 1 |
+| A second Ctrl-C, when the first did not end the wait: Chrome is killed, and a scratch profile deleted | 130 |
 
 **The surface around it.** `--browser` takes no other credential source: with
 `--stdin` or `--from-env` it is exit 2 from clap, before anything reads the

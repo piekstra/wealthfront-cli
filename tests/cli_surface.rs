@@ -131,6 +131,23 @@ fn auth_login_documents_the_browser_flag() {
         ));
 }
 
+/// `--fresh-profile` picks the profile a browser sign-in runs in, so alone it
+/// would do nothing: a usage error, before anything reads the keychain or the
+/// network.
+#[test]
+fn fresh_profile_requires_the_browser_flag() {
+    wfr()
+        .args(["auth", "login", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--fresh-profile"));
+    wfr()
+        .args(["auth", "login", "--fresh-profile"])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("--browser"));
+}
+
 /// A loopback stand-in for www.wealthfront.com serving the two login-flow
 /// requests: `GET /login` (sets the `login_xsrf` cookie) and the login POST
 /// (answered with `body`). Std only — no mock library (AGENTS.md).

@@ -23,24 +23,22 @@ Secrets enter only via an interactive prompt, `--stdin`, or `--from-env <VAR>`
 written to a log. `--verbose` does not print secrets, cookies, or full account
 numbers.
 
-`wfr auth logout` clears the session and any parked login; `--forget` also
-removes the stored password, device token, and config identity.
+`wfr auth logout` clears the session and any parked login, and removes the kept
+browser profile (below); `--forget` also removes the stored password, device
+token, and config identity.
 
 ## Browser sign-in
 
 `wfr auth login --browser` runs cli-common's `pk-cli-browser`
-([cli-common DESIGN.md §2.2](https://github.com/piekstra/cli-common/blob/v0.14.0/DESIGN.md)).
+([cli-common DESIGN.md §2.2](https://github.com/piekstra/cli-common/blob/v0.16.0/DESIGN.md)).
 You type the password and the 2FA code on Wealthfront's own page in a Chrome
 window; they never pass through `wfr`. While the window is open:
 
 - **The debug port has no authentication.** Chrome is launched with a
   DevTools port, and anything that can reach `127.0.0.1:<port>` or read the
   profile's `DevToolsActivePort` file can read every cookie in the window. So
-  the profile is created `0700`, exclusively (an existing path is refused,
-  never adopted), under an unpredictable name in the temp dir. It is deleted
-  on every exit, Ctrl-C included; a second Ctrl-C kills Chrome and deletes it
-  at once. A profile that cannot be removed is reported on stderr even under
-  `-q`, since it may hold the session.
+  the profile is owner-only (below), and Chrome is stopped on every exit,
+  Ctrl-C included; a second Ctrl-C kills it at once.
 - **Only Wealthfront's cookies are read.** Pages count only on exactly
   `www.wealthfront.com` over `https`. The stored session is the cookies the
   browser would send to `wealthfront.com` or a host under it, matched label
@@ -52,6 +50,29 @@ window; they never pass through `wfr`. While the window is open:
 - **The session is never logged, put on a command line, or written to disk**
   outside Chrome's own profile. Messages name hosts and cookie names only. The
   session is stored only as the keychain `session` item.
+
+**The browser profile stays on disk between sign-ins**, so Wealthfront remembers
+the device. It lives at
+`~/Library/Application Support/piekstra.wfr/browser-profile` on macOS
+(`$XDG_DATA_HOME/piekstra.wfr/browser-profile`, or under `~/.local/share`, on
+Linux) and holds Wealthfront's cookies, its session among them, and whatever the
+site keeps in `localStorage`. Chrome encrypts cookies at rest (on macOS with the
+"Chrome Safe Storage" key in the login keychain) but not `localStorage`, which
+only the directory's mode protects. So:
+
+- The profile is created `0700`, and a launch is refused when it is a symlink,
+  is not your user's or is not `0700`.
+- One sign-in uses it at a time. A second, or a launch while a Chrome still runs
+  in it, is refused (exit 1).
+- `wfr auth logout` removes it, after clearing the keychain items, and refuses
+  while it is in use or when it is a symlink or another user's (exit 1). The
+  message names the path and what to do.
+- `--fresh-profile` runs one sign-in in a scratch profile instead, created
+  `0700`, exclusively (an existing path is refused, never adopted), under an
+  unpredictable name in the temp dir, and removed when the window closes. One
+  that cannot be removed is reported on stderr even under `-q`, since it may
+  hold the session.
+- Windows has no kept profile: every sign-in there uses a scratch one.
 
 ## The MCP server
 

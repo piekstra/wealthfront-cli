@@ -27,11 +27,17 @@
 //! ([`browser_capture`]). Wealthfront sets `_wfsid` for anonymous visitors
 //! too, so no cookie proves the sign-in finished: before the tab closes,
 //! [`confirm_session`] makes one `GET /capitan/v1/me` with the candidate jar.
+//!
+//! The window runs in a Chrome profile `wfr` keeps between sign-ins, so a later
+//! `--browser` often needs no input; `--fresh-profile` opts out for one run,
+//! and `auth logout` removes it ([`logout_browser`]).
 
 use std::io::IsTerminal;
 
 use pk_cli_auth::{AuthMethod, AuthStatus, LoginArgs, LogoutArgs, SetCredentialArgs};
-use pk_cli_browser::{BrowserArgs, Capture, Captured, Confirm, HostRule, Launch, DEFAULT_TIMEOUT};
+use pk_cli_browser::{
+    BrowserArgs, BrowserError, Capture, Captured, Confirm, HostRule, Launch, DEFAULT_TIMEOUT,
+};
 use pk_cli_config::ConfigStore;
 use pk_cli_core::CliError;
 use pk_cli_secrets::{CredentialStore, Secret};
@@ -76,7 +82,8 @@ pub enum AuthCmd {
     Login(PortalLoginArgs),
     /// Report credential/session state (auth-status/v1).
     Status(StatusArgs),
-    /// Clear the session; --forget also removes the stored password.
+    /// Clear the session and remove the kept browser profile; --forget also
+    /// removes the stored password.
     Logout(LogoutArgs),
     /// Raw keychain write for rotation / headless setup.
     SetCredential(SetCredentialArgs),
@@ -122,7 +129,7 @@ fn login(
     // where reCAPTCHA sees a real browser (docs/api.md §3.2, §3.6), and the
     // confirmed session is stored like any other.
     if args.browser.browser {
-        let session = browser_session(quiet)?;
+        let session = browser_session(args.browser.fresh_profile, quiet)?;
         creds.set(SESSION_ACCOUNT, &session)?;
         if !quiet {
             eprintln!("logged in — session captured from the browser");
@@ -369,10 +376,12 @@ fn me_verdict(me: Result<Value, CliError>) -> Confirm {
 
 /// Open Chrome at the Wealthfront login, wait while the owner signs in, and
 /// hand back the confirmed jar as the `k=v; k=v` bundle the session is stored
-/// as. The crate closes the tab, stops Chrome and deletes its profile.
-fn browser_session(quiet: bool) -> Result<Secret, CliError> {
+/// as. The crate closes the tab and stops Chrome. The profile is kept for the
+/// next sign-in, unless `fresh_profile` runs this one in a scratch profile.
+fn browser_session(fresh_profile: bool, quiet: bool) -> Result<Secret, CliError> {
     let launch = Launch::new(crate::BIN)
         .url(format!("{BASE}{}", endpoints::LOGIN_PAGE))
+        .fresh_profile(fresh_profile)
         .quiet(quiet);
     let captured = pk_cli_browser::capture(launch, &browser_capture()?, DEFAULT_TIMEOUT)?;
     captured.cookie_header().ok_or_else(no_jar)
@@ -441,10 +450,30 @@ fn logout(
         creds.delete(DEVICE_ACCOUNT)?;
         store.clear()?;
     }
+    // Last, so a refusal (its window still open) leaves the rest done.
+    let line = logout_browser(|| pk_cli_browser::forget_profile(crate::BIN))?;
     if !quiet {
-        eprintln!("logged out");
+        eprintln!("{line}");
     }
     Ok(())
+}
+
+/// `auth logout`'s browser step. The profile a `--browser` sign-in keeps holds
+/// Wealthfront's own cookies (its remembered device and session), so a logout
+/// removes it too and the next sign-in starts signed out. The removal is
+/// passed in: the binary binds it to `forget_profile(BIN)`, the tests to
+/// `forget_profile_in` under a temp dir, so a test never removes the owner's
+/// real profile. Returns the status line.
+fn logout_browser(forget: impl FnOnce() -> Result<bool, BrowserError>) -> Result<String, CliError> {
+    let removed = forget()?;
+    Ok(format!(
+        "logged out{}",
+        if removed {
+            "; browser profile removed"
+        } else {
+            ""
+        }
+    ))
 }
 
 fn prompt_line(label: &str) -> Result<String, CliError> {
@@ -462,8 +491,79 @@ fn prompt_line(label: &str) -> Result<String, CliError> {
 mod tests {
     use super::*;
     use crate::loopback;
-    use pk_cli_browser::{BrowserError, JarCookie};
+    use pk_cli_browser::JarCookie;
     use serde_json::json;
+
+    /// A temp dir standing in for the per-user data dir, and the profile
+    /// `forget_profile_in` looks for under it.
+    fn profile_under_temp(tag: &str) -> (std::path::PathBuf, std::path::PathBuf) {
+        let root = std::env::temp_dir().join(format!("wfr-logout-{tag}-{}", std::process::id()));
+        // A leftover from an aborted run must not decide the test.
+        let _ = std::fs::remove_dir_all(&root);
+        let profile = root
+            .join(format!("piekstra.{}", crate::BIN))
+            .join("browser-profile");
+        (root, profile)
+    }
+
+    /// The logout's browser step on a temp dir through `test-util`'s
+    /// `forget_profile_in`, so it never removes the owner's real profile.
+    #[test]
+    fn logout_removes_the_kept_browser_profile() {
+        let (root, profile) = profile_under_temp("removes");
+        std::fs::create_dir_all(profile.join("Default")).unwrap();
+        let forget = || pk_cli_browser::forget_profile_in(&root, crate::BIN);
+        assert_eq!(
+            logout_browser(forget).unwrap(),
+            "logged out; browser profile removed"
+        );
+        assert!(!profile.exists());
+        // Only the profile goes, not the directory it sits in.
+        assert!(profile.parent().unwrap().exists());
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn logout_with_no_kept_profile_still_logs_out() {
+        let (root, _) = profile_under_temp("none");
+        let forget = || pk_cli_browser::forget_profile_in(&root, crate::BIN);
+        assert_eq!(logout_browser(forget).unwrap(), "logged out");
+    }
+
+    /// A profile in use refuses the logout's last step with the crate's
+    /// message, which says what to close, and exit 1.
+    #[test]
+    fn logout_reports_a_profile_in_use() {
+        let err = logout_browser(|| {
+            Err(BrowserError::ProfileInUse(
+                "a Chrome (pid 7) is still running in dummy-profile".into(),
+            ))
+        })
+        .unwrap_err();
+        assert_eq!(err.exit_code(), 1);
+        assert_eq!(
+            err.to_string(),
+            "a Chrome (pid 7) is still running in dummy-profile"
+        );
+    }
+
+    /// A kept profile that is a symlink needs repair: the crate refuses it,
+    /// the logout says so, and neither the link nor its target goes.
+    #[cfg(unix)]
+    #[test]
+    fn logout_refuses_a_profile_that_needs_repair() {
+        let (root, profile) = profile_under_temp("repair");
+        let target = root.join("elsewhere");
+        std::fs::create_dir_all(&target).unwrap();
+        std::fs::create_dir_all(profile.parent().unwrap()).unwrap();
+        std::os::unix::fs::symlink(&target, &profile).unwrap();
+        let err =
+            logout_browser(|| pk_cli_browser::forget_profile_in(&root, crate::BIN)).unwrap_err();
+        assert_eq!(err.exit_code(), 1);
+        assert!(err.to_string().contains("refusing to remove it"), "{err}");
+        assert!(target.exists() && profile.symlink_metadata().is_ok());
+        std::fs::remove_dir_all(&root).unwrap();
+    }
 
     /// The `xsrf` cookie percent-encoded, as the site sets it, and the
     /// `x-csrf-token` the read must send for it (docs/api.md §3.4).

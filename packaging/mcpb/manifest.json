@@ -2,7 +2,7 @@
   "manifest_version": "0.3",
   "name": "wfr",
   "display_name": "Wealthfront (wfr)",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Read-only access to your own Wealthfront balances, activity and statements, through the open-source wfr CLI.",
   "long_description": "Ask Claude about your Wealthfront accounts: what each one is worth and their total, what moved in or out over a period (deposits, withdrawals, interest), and which statements and trade confirmations exist. Three read-only tools, wealthfront_accounts, wealthfront_activity and wealthfront_documents; nothing can trade, transfer or change your account. The extension asks for no password: Wealthfront sign-in is through a browser, so first install the wfr CLI and run `wfr auth login --browser` in a terminal. That stores the session in your OS keychain, and the bundled wfr reads it from there and keeps it current. On macOS the first call asks for keychain access; choose Always Allow. Unofficial; not affiliated with Wealthfront.",
   "author": {
