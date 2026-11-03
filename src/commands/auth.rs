@@ -41,7 +41,7 @@
 
 use std::io::IsTerminal;
 
-use pk_cli_auth::{AuthMethod, AuthStatus, LoginArgs, LogoutArgs, SetCredentialArgs};
+use pk_cli_auth::{AuthLogin, AuthMethod, AuthStatus, LoginArgs, LogoutArgs, SetCredentialArgs};
 use pk_cli_browser::{
     BrowserArgs, BrowserError, Capture, Captured, Confirm, HostRule, Launch, DEFAULT_TIMEOUT,
 };
@@ -50,7 +50,7 @@ use pk_cli_core::CliError;
 use pk_cli_secrets::{CredentialStore, Secret};
 use serde_json::Value;
 
-use crate::client::{clear_pending, endpoints, CodeChannel, Wf, BASE};
+use crate::client::{clear_pending, endpoints, CodeChannel, ReadError, Wf, BASE};
 use crate::config::Config;
 use crate::keychain::{
     self, DEVICE_ACCOUNT, PASSWORD_ACCOUNT, PENDING_ACCOUNT, SERVICE_ENV, SESSION_ACCOUNT,
@@ -61,17 +61,24 @@ use crate::keychain::{
 /// before anything reads the keychain or the network or opens Chrome
 /// (cli-common DESIGN.md §2.2).
 #[derive(clap::Args, Debug)]
-#[command(mut_arg("browser", |a| {
-    a.conflicts_with_all([
-        "stdin",
-        "from_env",
-        "code",
-        "no_verify",
-        "overwrite",
-        "non_interactive",
-        "channel",
-    ])
-}))]
+///
+/// The shared `LoginArgs` brings `--no-verify`, which no login path here reads, so
+/// `--help` does not offer it. It still parses, so a script that passes it does not
+/// break.
+#[command(
+    mut_arg("browser", |a| {
+        a.conflicts_with_all([
+            "stdin",
+            "from_env",
+            "code",
+            "no_verify",
+            "overwrite",
+            "non_interactive",
+            "channel",
+        ])
+    }),
+    mut_arg("no_verify", |a| a.hide(true))
+)]
 pub struct PortalLoginArgs {
     #[command(flatten)]
     pub base: LoginArgs,
@@ -125,7 +132,7 @@ pub fn run(
     // Loaded only in the arms that use it, so a logout runs every step even when
     // the file can't be parsed.
     match cmd {
-        AuthCmd::Login(args) => login(args, creds, &store.load()?, quiet, interactive),
+        AuthCmd::Login(args) => login(args, creds, &store.load()?, json, quiet, interactive),
         AuthCmd::Status(args) => status(args, creds, &store.load()?, json, quiet),
         AuthCmd::Logout(args) => logout(args, creds, store, keep_config, quiet),
         AuthCmd::SetCredential(args) => {
@@ -148,6 +155,7 @@ fn login(
     args: &PortalLoginArgs,
     creds: &CredentialStore,
     cfg: &Config,
+    json: bool,
     quiet: bool,
     interactive: bool,
 ) -> Result<(), CliError> {
@@ -168,6 +176,10 @@ fn login(
                 .map_err(BrowserError::Handler)?;
             if !quiet {
                 eprintln!("logged in — session captured from the browser");
+            }
+            if json {
+                // Only `Confirm::Ready`, a read that worked, hands a session over.
+                pk_cli_core::output::json(&AuthLogin::stored(true).to_json());
             }
             Ok(())
         });
@@ -194,7 +206,7 @@ fn login(
         // so a failed code can't be replayed against a dead session.
         clear_pending(creds)?;
         result?;
-        return finish(&wf, creds, quiet);
+        return finish(&wf, creds, json, quiet);
     }
 
     let username = cfg.username.as_deref().ok_or_else(|| {
@@ -315,7 +327,7 @@ fn login(
     let result = wf.verify_code(code.trim(), args.channel);
     clear_pending(creds)?;
     result?;
-    finish(&wf, creds, quiet)
+    finish(&wf, creds, json, quiet)
 }
 
 /// Read the password from the explicit source, or prompt when allowed.
@@ -337,7 +349,7 @@ fn read_password(args: &PortalLoginArgs) -> Result<pk_cli_secrets::Secret, CliEr
 /// cannot fetch anything leaves no broken session behind — and so the cookie
 /// stored is the one that survived that read, since the site may rotate it
 /// mid-flight.
-fn finish(wf: &Wf, creds: &CredentialStore, quiet: bool) -> Result<(), CliError> {
+fn finish(wf: &Wf, creds: &CredentialStore, json: bool, quiet: bool) -> Result<(), CliError> {
     wf.me()?;
     let session = wf.session_bundle().ok_or_else(|| {
         CliError::Upstream("login succeeded but Wealthfront issued no session cookie".into())
@@ -345,6 +357,10 @@ fn finish(wf: &Wf, creds: &CredentialStore, quiet: bool) -> Result<(), CliError>
     creds.set(SESSION_ACCOUNT, &session)?;
     if !quiet {
         eprintln!("logged in");
+    }
+    if json {
+        // `wf.me()` above accepted this session before it was stored.
+        pk_cli_core::output::json(&AuthLogin::stored(true).to_json());
     }
     Ok(())
 }
@@ -389,22 +405,59 @@ fn confirm_session_with(
     let Some(bundle) = candidate.cookie_header() else {
         return Confirm::Fail(no_jar());
     };
-    me_verdict(client(bundle.expose()).and_then(|wf| wf.me()))
+    me_verdict(
+        client(bundle.expose())
+            .map_err(ReadError::from)
+            .and_then(|wf| wf.read_me()),
+    )
 }
 
-/// What the `/capitan/v1/me` read says about a candidate session.
-fn me_verdict(me: Result<Value, CliError>) -> Confirm {
+/// What the `/capitan/v1/me` read says about a candidate session (cli-common
+/// DESIGN.md §2.2). `_wfsid` is set for a visitor too and may be kept in the profile,
+/// so no answer short of the account object stores anything. A reason holds fixed
+/// parts and a status, never the answer's body or a cookie value.
+fn me_verdict(me: Result<Value, ReadError>) -> Confirm {
+    let read = format!("GET {}", endpoints::ME);
     match me {
-        // The account object, the only answer `Wf::me` lets through.
+        // The account object, the only answer `Wf::read_me` lets through.
         Ok(_) => Confirm::Ready,
-        // The answer a visitor gets: the owner has not finished signing in.
-        Err(CliError::Auth(_)) => {
-            Confirm::NotYet(format!("GET {} answered as signed out", endpoints::ME))
+        // The owner may not have finished signing in. A timeout gives what the read
+        // was told: the client's own fixed wording.
+        Err(ReadError::Failed(CliError::Auth(why))) => {
+            Confirm::NotYet(format!("{read} was refused: {why}"))
         }
-        // A 429, a 200 that is not the account object, the network, a
-        // cookie or CSRF bug: waiting will not fix it, so it ends the wait
-        // instead of blaming a slow sign-in.
-        Err(e) => Confirm::Fail(CliError::Upstream(format!(
+        Err(ReadError::NotSignedIn(_)) => {
+            Confirm::NotYet(format!("{read} answered with no account in it"))
+        }
+        // The read could not decide. The crate keeps the tab and the jar, since the
+        // cookies do not outlive the stop, and asks again after its backoff.
+        Err(ReadError::EdgeBlock {
+            status,
+            retry_after,
+        }) => Confirm::Undecided {
+            reason: format!(
+                "{read} answered HTTP {status} with a page that is possibly a bot check or edge \
+                 block"
+            ),
+            retry_after,
+        },
+        Err(ReadError::Inconclusive {
+            status,
+            retry_after,
+            ..
+        }) => Confirm::Undecided {
+            reason: format!("{read} answered HTTP {status}"),
+            retry_after,
+        },
+        Err(ReadError::NoAnswer(_)) => Confirm::undecided(format!("{read} got no answer")),
+        Err(ReadError::NotJson(_)) => {
+            Confirm::undecided(format!("{read} answered with no JSON in it"))
+        }
+        Err(ReadError::Empty(_)) => {
+            Confirm::undecided(format!("{read} answered with nothing in it"))
+        }
+        // A 404, or a client that can't be built: no later poll changes these.
+        Err(ReadError::Failed(e)) => Confirm::Fail(CliError::Upstream(format!(
             "session validation failed during the browser login: {e}"
         ))),
     }
@@ -784,6 +837,7 @@ mod tests {
     use crate::loopback;
     use pk_cli_browser::JarCookie;
     use serde_json::json;
+    use std::time::Duration;
 
     /// A temp dir standing in for the per-user data dir, and the profile
     /// `forget_profile_in` looks for under it.
@@ -1291,7 +1345,7 @@ mod tests {
             loopback::response(
                 "200 OK",
                 &["Content-Type: application/json"],
-                r#"{"dummy":true}"#,
+                r#"{"emailAddress":"user@example.com"}"#,
             )
         });
         assert!(matches!(verdict, Confirm::Ready), "{verdict:?}");
@@ -1332,10 +1386,12 @@ mod tests {
                 }
             });
             match verdict {
-                Confirm::NotYet(reason) => assert_eq!(
-                    reason, "GET /capitan/v1/me answered as signed out",
-                    "{case}"
-                ),
+                Confirm::NotYet(reason) => {
+                    assert!(
+                        reason.starts_with("GET /capitan/v1/me was refused: "),
+                        "{case}: {reason}"
+                    )
+                }
                 other => panic!("{case} must keep waiting: {other:?}"),
             }
             assert_eq!(requests.len(), connections, "{case}");
@@ -1343,84 +1399,214 @@ mod tests {
         }
     }
 
-    /// What waiting will not fix ends the wait: a 404, a rate limit, a
-    /// server error, or a 200 that is not the account object. A visitor's
-    /// `/capitan/v1/me` is a 401, so an empty, `null` or non-object 200 is
-    /// not a slow sign-in, and a status code alone is never one.
+    /// An edge block's page can't decide: the crate keeps the tab and the jar. The
+    /// reason names it, and holds neither the answer's body nor a cookie value.
     #[test]
-    fn a_me_read_waiting_cannot_fix_ends_the_wait() {
-        let json = &["Content-Type: application/json"][..];
-        let not_the_object = |kind: &str| {
-            format!("network/upstream error: Wealthfront answered /capitan/v1/me with {kind} where the account object was expected")
-        };
-        for (case, answer, cause) in [
+    fn an_edge_block_is_undecided() {
+        const PAGE: &str = "<!DOCTYPE html><html><title>Just a moment...</title>dummy-body</html>";
+        for (case, status, page) in [
+            ("a 403 challenge", "403 Forbidden", PAGE),
             (
-                "404",
-                loopback::response("404 Not Found", &[], ""),
-                "not found: /capitan/v1/me (HTTP 404)".to_string(),
+                "a bare 403 page",
+                "403 Forbidden",
+                "<html>dummy-body</html>",
             ),
+            ("a 200 challenge", "200 OK", PAGE),
+        ] {
+            let verdict = answer_to(status, "text/html", page);
+            let Confirm::Undecided { reason, .. } = verdict else {
+                panic!("{case} must be undecided: {verdict:?}");
+            };
+            assert!(reason.contains("possibly a bot check"), "{case}: {reason}");
+            assert!(!reason.contains("session expired"), "{case}: {reason}");
+            // The page's marker and every cookie value in `captured_jar` are dummies.
+            assert!(!reason.contains("dummy"), "{case}: {reason}");
+        }
+    }
+
+    /// The hook's answer to one read of `status` and `page`.
+    fn answer_to(status: &'static str, content_type: &'static str, page: &'static str) -> Confirm {
+        confirm_against(1, move |_| {
+            loopback::response(status, &[&format!("Content-Type: {content_type}")], page)
+        })
+        .0
+    }
+
+    /// A login page is a refusal, even one holding a challenge's words outside its
+    /// title, and so is a parseable answer with no account: the owner may not have
+    /// finished signing in. The field's value counts, not its presence.
+    #[test]
+    fn a_login_page_or_an_answer_with_no_account_keeps_waiting() {
+        let login_page = include_str!("../../tests/fixtures/login-page-with-challenge-words.html");
+        for page in ["<!doctype html>", login_page] {
+            let verdict = answer_to("200 OK", "text/html", page);
+            assert!(
+                matches!(&verdict, Confirm::NotYet(reason) if reason.contains("was refused")),
+                "{verdict:?}"
+            );
+        }
+        for body in [
+            "{}",
+            "[]",
+            "true",
+            "0",
+            r#""dummy""#,
+            r#"{"dummy":true}"#,
+            r#"{"emailAddress":""}"#,
+            r#"{"emailAddress":"  "}"#,
+            r#"{"emailAddress":null}"#,
+            r#"{"userIdExternalized":1}"#,
+            r#"{"redirectUrl":"/login","success":false}"#,
+        ] {
+            let verdict = answer_to("200 OK", "application/json", body);
+            match verdict {
+                Confirm::NotYet(reason) => assert_eq!(
+                    reason, "GET /capitan/v1/me answered with no account in it",
+                    "{body}"
+                ),
+                other => panic!("{body} must keep waiting: {other:?}"),
+            }
+        }
+    }
+
+    /// Either field, with something in it, shows an account.
+    #[test]
+    fn either_account_field_with_a_value_is_ready() {
+        for body in [
+            r#"{"emailAddress":"user@example.com"}"#,
+            r#"{"userIdExternalized":"dummy-id"}"#,
+            r#"{"emailAddress":"","userIdExternalized":"dummy-id"}"#,
+        ] {
+            let verdict = answer_to("200 OK", "application/json", body);
+            assert!(matches!(verdict, Confirm::Ready), "{body}: {verdict:?}");
+        }
+    }
+
+    /// What can't decide keeps the tab and the jar: a throttle, a server error, or a
+    /// 2xx that is empty or not JSON. The reason holds fixed parts, not the body.
+    #[test]
+    fn a_read_that_cannot_decide_is_undecided() {
+        let json = "application/json";
+        for (case, status, content_type, body, reason) in [
             (
                 "429",
-                loopback::response("429 Too Many Requests", &[], ""),
-                "network/upstream error: Wealthfront rate-limited /capitan/v1/me (HTTP 429) — wait before retrying"
-                    .to_string(),
+                "429 Too Many Requests",
+                json,
+                "",
+                "answered HTTP 429",
             ),
             (
                 "500",
-                loopback::response("500 Internal Server Error", &[], ""),
-                "network/upstream error: Wealthfront HTTP 500 for /capitan/v1/me".to_string(),
+                "500 Internal Server Error",
+                json,
+                "",
+                "answered HTTP 500",
             ),
             (
                 "503",
-                loopback::response("503 Service Unavailable", &[], ""),
-                "network/upstream error: Wealthfront HTTP 503 for /capitan/v1/me".to_string(),
+                "503 Service Unavailable",
+                json,
+                "",
+                "answered HTTP 503",
             ),
             (
-                "a non-JSON 200",
-                loopback::response("200 OK", &["Content-Type: text/plain"], "kaboom"),
-                "network/upstream error: Wealthfront returned non-JSON for /capitan/v1/me (first bytes: \"kaboom\")"
-                    .to_string(),
+                "HTML 502",
+                "502 Bad Gateway",
+                "text/html",
+                "<html></html>",
+                "answered HTTP 502",
             ),
             (
                 "an empty 200",
-                loopback::response("200 OK", json, ""),
-                not_the_object("an empty body or null"),
+                "200 OK",
+                json,
+                "",
+                "answered with nothing in it",
             ),
             (
                 "a null 200",
-                loopback::response("200 OK", json, "null"),
-                not_the_object("an empty body or null"),
+                "200 OK",
+                json,
+                "null",
+                "answered with nothing in it",
             ),
             (
-                "an array 200",
-                loopback::response("200 OK", json, "[]"),
-                not_the_object("an array"),
-            ),
-            (
-                "a string 200",
-                loopback::response("200 OK", json, r#""dummy""#),
-                not_the_object("a string"),
+                "a non-JSON 200",
+                "200 OK",
+                "text/plain",
+                "dummy-not-json",
+                "answered with no JSON in it",
             ),
         ] {
-            let (verdict, requests) = confirm_against(1, move |_| answer.clone());
-            assert_eq!(assert_ends_the_wait(verdict, case), cause, "{case}");
+            let (verdict, requests) = confirm_against(1, move |_| {
+                loopback::response(status, &[&format!("Content-Type: {content_type}")], body)
+            });
+            match verdict {
+                Confirm::Undecided {
+                    reason: said,
+                    retry_after,
+                    ..
+                } => {
+                    assert_eq!(said, format!("GET /capitan/v1/me {reason}"), "{case}");
+                    assert_eq!(retry_after, None, "{case}");
+                }
+                other => panic!("{case} must be undecided: {other:?}"),
+            }
             assert_eq!(requests.len(), 1, "{case}");
             assert_me_read(&requests[0], case);
         }
     }
 
-    /// A server that refuses the connection, and a client that cannot be
-    /// built (as when `WFR_BASE_URL` is refused), end the wait too.
+    /// The provider's `Retry-After` reaches the crate, from a throttle, a server error
+    /// and an edge block's page.
     #[test]
-    fn an_unreachable_server_or_an_unbuilt_client_ends_the_wait() {
+    fn undecided_passes_the_providers_retry_after() {
+        for (status, content_type) in [
+            ("429 Too Many Requests", "application/json"),
+            ("503 Service Unavailable", "application/json"),
+            ("403 Forbidden", "text/html"),
+        ] {
+            let (verdict, _) = confirm_against(1, move |_| {
+                loopback::response(
+                    status,
+                    &[&format!("Content-Type: {content_type}"), "Retry-After: 120"],
+                    "<html></html>",
+                )
+            });
+            match verdict {
+                Confirm::Undecided { retry_after, .. } => {
+                    assert_eq!(retry_after, Some(Duration::from_secs(120)), "{status}");
+                }
+                other => panic!("{status} must be undecided: {other:?}"),
+            }
+        }
+    }
+
+    /// A server that refuses the connection is undecided, with a fixed reason.
+    #[test]
+    fn an_unreachable_server_is_undecided() {
         let closed = {
             let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind loopback");
             format!("http://{}", listener.local_addr().unwrap())
         };
-        assert_ends_the_wait(
-            confirm_session_with(&captured_jar(), |bundle| Wf::from_bundle_at(closed, bundle)),
-            "a refused connection",
+        match confirm_session_with(&captured_jar(), |bundle| Wf::from_bundle_at(closed, bundle)) {
+            Confirm::Undecided { reason, .. } => {
+                assert_eq!(reason, "GET /capitan/v1/me got no answer");
+            }
+            other => panic!("a refused connection must be undecided: {other:?}"),
+        }
+    }
+
+    /// No later poll changes a 404 or a client that can't be built, so they end the wait.
+    #[test]
+    fn a_missing_read_or_an_unbuilt_client_ends_the_wait() {
+        let (verdict, requests) =
+            confirm_against(1, |_| loopback::response("404 Not Found", &[], ""));
+        assert_eq!(
+            assert_ends_the_wait(verdict, "404"),
+            "not found: /capitan/v1/me (HTTP 404)"
         );
+        assert_me_read(&requests[0], "404");
         assert_ends_the_wait(
             confirm_session_with(&captured_jar(), |_| {
                 Err(CliError::Usage(
@@ -1429,6 +1615,17 @@ mod tests {
             }),
             "a client that cannot be built",
         );
+    }
+
+    /// A wait that runs out undecided is exit 5, and keeps the kept profile's note.
+    #[test]
+    fn a_wait_that_runs_out_undecided_is_exit_5() {
+        let err = noting_kept_profile::<()>(Some("dummy note".into()), || {
+            Err(BrowserError::Undecided("dummy reason".into()))
+        })
+        .unwrap_err();
+        assert_eq!(err.exit_code(), 5);
+        assert!(err.to_string().contains("dummy note"), "{err}");
     }
 
     /// The definition `pk-cli-browser` checks before Chrome starts, checked
@@ -1501,27 +1698,38 @@ mod tests {
     }
 
     /// The `/capitan/v1/me` answer, mapped one to one from the embedded
-    /// capture: a session keeps the tab for the read, a signed-out answer
-    /// keeps waiting, anything else ends the wait as exit 5.
+    /// capture: a session keeps the tab for the read, a refused answer or one
+    /// with no account keeps waiting, a read that can't decide is `Undecided`,
+    /// and anything else (a 404, an unbuilt client) ends the wait as exit 5.
     #[test]
     fn the_me_read_decides_the_capture() {
         assert!(matches!(me_verdict(Ok(json!({}))), Confirm::Ready));
 
-        match me_verdict(Err(CliError::Auth("session expired".into()))) {
+        match me_verdict(Err(CliError::Auth("session expired".into()).into())) {
             Confirm::NotYet(reason) => {
-                assert_eq!(reason, "GET /capitan/v1/me answered as signed out");
+                assert_eq!(reason, "GET /capitan/v1/me was refused: session expired");
             }
             other => panic!("an auth error must keep waiting: {other:?}"),
         }
 
+        match me_verdict(Err(ReadError::EdgeBlock {
+            status: 403,
+            retry_after: None,
+        })) {
+            Confirm::Undecided { reason, .. } => {
+                assert!(reason.contains("HTTP 403"), "{reason}");
+                assert!(reason.contains("possibly a bot check"), "{reason}");
+            }
+            other => panic!("an edge block must be undecided: {other:?}"),
+        }
+
         for e in [
-            CliError::Upstream("Wealthfront HTTP 503 for /capitan/v1/me".into()),
             CliError::NotFound("/capitan/v1/me (HTTP 404)".into()),
             CliError::Usage("WFR_BASE_URL must be a plain http(s) URL".into()),
             CliError::Other("connection reset".into()),
         ] {
             let cause = e.to_string();
-            let Confirm::Fail(err) = me_verdict(Err(e)) else {
+            let Confirm::Fail(err) = me_verdict(Err(e.into())) else {
                 panic!("{cause} must end the wait");
             };
             assert_eq!(err.exit_code(), 5, "{cause}");

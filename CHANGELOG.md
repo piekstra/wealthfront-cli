@@ -1,5 +1,37 @@
 # Changelog
 
+## v0.3.3 — 2026-11-03
+
+Built on cli-common v0.20.0.
+
+- A `wfr auth login --browser` that runs out of time before you finish signing in
+  now says what `GET /capitan/v1/me` answered, where it used to say only "answered
+  as signed out". Still exit 3.
+- A read that can't decide no longer ends the sign-in, and an edge block no longer
+  reads as a dead session. That is a 429, a 5xx, a dropped connection, an edge
+  block's page (an HTML 403, or a page behind a 200 titled as a challenge), or a 200
+  that is empty, `null` or not JSON. The window stays open, since the session cookies
+  do not survive the stop, and cli-common asks again after a backoff of 6 s, doubling
+  to 60 s, or longer if Wealthfront's `Retry-After` asks. Its first such answer prints
+  one status line, unless `-q`, saying Ctrl-C ends the wait. **A wait that runs out on
+  it is exit 5**, not exit 3 as an edge block was, because signing in again fixes
+  nothing. A 404 still ends the sign-in at once, since no later poll can change it.
+- A 200 alone no longer accepts a session, on any path. `GET /capitan/v1/me` must
+  show a non-empty `emailAddress` or `userIdExternalized`. In a browser sign-in a
+  parseable answer without one keeps the wait going, where it used to end it. The
+  password login and `auth status --verify` report it as exit 5, as before.
+- `wfr auth login --json` used to run and print nothing on stdout. It now prints
+  `auth-login/v1` on every path that stores a session, with `verified: true`. Every
+  path stores a session only after that read showed an account, so it is never
+  `false`.
+- Outside a sign-in, a 403's HTML page, or a page behind a 200 titled as a challenge,
+  names itself as a possible bot check or edge block (exit 3): a new sign-in may not
+  clear it, so wait or try another network. Any other 403 names both causes. Exit
+  codes are unchanged. The text holds a status, never a cookie value or the page.
+- `wfr auth login --help` no longer offers `--no-verify`, which no login path
+  reads. It still parses without `--browser`, so a script that passes it does not
+  break.
+
 ## v0.3.2 — 2026-11-03
 
 `wfr auth login --browser` now refuses every login flag it does not read, with
