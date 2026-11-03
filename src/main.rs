@@ -330,17 +330,55 @@ mod tests {
         assert_eq!(typed_account(&cli, &m), None);
     }
 
-    /// `--browser` captures the session, so clap refuses it beside another
-    /// credential source (exit 2) before `run` reads the keychain or the
-    /// network. Parsed only: nothing here runs a login.
+    /// A login flag the browser branch does not read is refused beside `--browser`,
+    /// so a new flag can't be silently ignored: it conflicts, or it joins this list
+    /// because the branch reads it.
+    #[test]
+    fn every_login_flag_the_browser_branch_does_not_read_is_refused() {
+        let mut cli = Cli::command();
+        let auth = cli.find_subcommand_mut("auth").unwrap();
+        let login = auth.find_subcommand_mut("login").unwrap();
+        let browser = login
+            .get_arguments()
+            .find(|a| a.get_id() == "browser")
+            .unwrap();
+        let refused: Vec<&str> = login
+            .get_arg_conflicts_with(browser)
+            .iter()
+            .map(|a| a.get_id().as_str())
+            .collect();
+        let read_by_the_browser_branch = ["browser", "fresh_profile", "help"];
+        for arg in login.get_arguments() {
+            let id = arg.get_id().as_str();
+            if arg.is_global_set() || read_by_the_browser_branch.contains(&id) {
+                continue;
+            }
+            assert!(refused.contains(&id), "--browser must conflict with {id}");
+        }
+    }
+
+    /// `--browser` captures the session and reads only `--fresh-profile`, so clap
+    /// refuses it beside every other login flag (exit 2) before `run` reads the
+    /// keychain or the network. Parsed only: nothing here runs a login.
     #[test]
     fn browser_login_takes_no_other_credential_source() {
         let parse = |extra: &[&str]| {
             let argv = [&["wfr", "auth", "login"][..], extra].concat();
             Cli::command().try_get_matches_from(argv)
         };
+        // Bare `--browser` still parses, though `--channel` has a default.
         assert!(parse(&["--browser"]).is_ok());
-        for other in [&["--stdin"][..], &["--from-env", "WFR_PASSWORD"]] {
+        assert!(parse(&["--browser", "--fresh-profile"]).is_ok());
+        let refused = [
+            &["--stdin"][..],
+            &["--from-env", "WFR_PASSWORD"],
+            &["--code", "000000"],
+            &["--no-verify"],
+            &["--overwrite"],
+            &["--non-interactive"],
+            &["--channel", "totp"],
+        ];
+        for other in refused {
             let err = parse(&[&["--browser"][..], other].concat()).unwrap_err();
             assert_eq!(err.kind(), clap::error::ErrorKind::ArgumentConflict);
             assert_eq!(err.exit_code(), 2);
@@ -349,6 +387,9 @@ mod tests {
         assert!(parse(&["--stdin", "--channel", "totp"]).is_ok());
         assert!(parse(&["--from-env", "WFR_PASSWORD"]).is_ok());
         assert!(parse(&["--code", "000000"]).is_ok());
+        assert!(parse(&["--no-verify"]).is_ok());
+        assert!(parse(&["--overwrite"]).is_ok());
+        assert!(parse(&["--non-interactive"]).is_ok());
     }
 
     /// Set on the child process [`env_account_reaches_the_parse_but_never_narrows_net_worth`]
