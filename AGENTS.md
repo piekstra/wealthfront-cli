@@ -109,6 +109,11 @@ delegates the rest. Don't fork these. The browser sign-in is
 If it ever needs something the crate cannot express, add it to cli-common
 rather than embedding DevTools code here again.
 
+**A login flag the browser branch does not read conflicts with `--browser`,** so
+it is refused (exit 2), not ignored. The test
+`every_login_flag_the_browser_branch_does_not_read_is_refused` holds a new flag
+to this.
+
 **The kept browser profile.** `--browser` runs Chrome in `~/Library/Application
 Support/piekstra.wfr/browser-profile` on macOS
 (`$XDG_DATA_HOME/piekstra.wfr/browser-profile`, or under `~/.local/share`, on

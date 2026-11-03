@@ -85,16 +85,30 @@ fn auth_login_documents_the_mfa_resume_flag() {
         .stdout(predicate::str::contains("--channel"));
 }
 
+/// `--browser` captures the session and reads only `--fresh-profile`, so every
+/// other login flag is refused rather than ignored.
 #[test]
 fn browser_login_refuses_another_credential_source_before_anything_runs() {
-    // Exit 2 from clap, before any keychain or network read. WFR_CHROME
-    // points at nothing, so even a regression that let the flags through
-    // would fail on the missing binary rather than open a window.
+    // Exit 2 from clap, before any keychain or network read. Should one ever
+    // parse, the empty service and temp `HOME` keep the command off the real
+    // keychain items and the real profile, and WFR_CHROME pointing at nothing
+    // fails it on the missing binary rather than opening a window.
     let dir = std::env::temp_dir().join(format!("wfr-browser-conflict-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
     let cfg = dir.join("config.toml");
     for (other, flag) in [
         (&["--stdin"][..], "'--stdin'"),
         (&["--from-env", "WFR_PASSWORD"][..], "'--from-env <VAR>'"),
+        (&["--fresh-profile", "--stdin"][..], "'--stdin'"),
+        (&["--code", "000000"][..], "'--code <CODE>'"),
+        (
+            &["--fresh-profile", "--code", "000000"][..],
+            "'--code <CODE>'",
+        ),
+        (&["--no-verify"][..], "'--no-verify'"),
+        (&["--overwrite"][..], "'--overwrite'"),
+        (&["--non-interactive"][..], "'--non-interactive'"),
+        (&["--channel", "totp"][..], "'--channel <CHANNEL>'"),
     ] {
         let mut args = vec![
             "--json",
@@ -106,6 +120,8 @@ fn browser_login_refuses_another_credential_source_before_anything_runs() {
         ];
         args.extend_from_slice(other);
         wfr()
+            .env("HOME", &dir)
+            .env("WFR_KEYCHAIN_SERVICE", "piekstra.wfr-test-empty")
             .env("WFR_CHROME", dir.join("no-chrome"))
             .args(&args)
             .write_stdin("")
@@ -115,6 +131,7 @@ fn browser_login_refuses_another_credential_source_before_anything_runs() {
                 "the argument '--browser' cannot be used with {flag}"
             )));
     }
+    std::fs::remove_dir_all(&dir).unwrap();
 }
 
 #[test]
@@ -160,6 +177,10 @@ fn fresh_profile_without_browser_is_refused_beside_every_login_flag() {
         ["--code", "000000"].as_slice(),
         ["--stdin"].as_slice(),
         ["--from-env", "WFR_TEST_UNSET"].as_slice(),
+        ["--no-verify"].as_slice(),
+        ["--overwrite"].as_slice(),
+        ["--non-interactive"].as_slice(),
+        ["--channel", "totp"].as_slice(),
     ] {
         wfr()
             .env("HOME", &home)

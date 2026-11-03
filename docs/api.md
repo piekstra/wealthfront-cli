@@ -556,16 +556,17 @@ logged in — session captured from the browser
 | The kept profile is in use (another sign-in, or a Chrome still running in it) or needs repair (a symlink, another user's, not `0700`). The message names the path and what to do. `wfr auth logout` refuses the same way, after attempting every other step, and its error says what was cleared and what remains | 1 |
 | A second Ctrl-C, when the first did not end the wait: Chrome is killed, and a scratch profile deleted | 130 |
 
-**The surface around it.** `--browser` takes no other credential source: with
-`--stdin` or `--from-env` it is exit 2 from clap, before anything reads the
-keychain or the network. `wfr info` gives `wfr auth login --browser` as its
-`login_hint`. `auth status` reports `browser_profile`, whether a profile is kept
-and not whether it is signed in, and nothing while `WFR_KEYCHAIN_SERVICE` names
-a service. It reports `method: "password"` whichever login stored the session,
-although cli-common DESIGN.md §2.2 asks for `browser-session` after a browser
-sign-in. Both logins store the same `k=v; k=v` cookie string under `session`, so
-nothing stored says which one ran, and recording it would mean new state beside
-the session.
+**The surface around it.** `--browser` reads only `--fresh-profile`: with
+`--stdin`, `--from-env`, `--code`, `--no-verify`, `--overwrite`,
+`--non-interactive` or `--channel` it is exit 2 from clap, before anything reads
+the keychain or the network or opens Chrome. `wfr info` gives `wfr auth login
+--browser` as its `login_hint`. `auth status` reports `browser_profile`, whether
+a profile is kept and not whether it is signed in, and nothing while
+`WFR_KEYCHAIN_SERVICE` names a service. It reports `method: "password"`
+whichever login stored the session, although cli-common DESIGN.md §2.2 asks for
+`browser-session` after a browser sign-in. Both logins store the same `k=v; k=v`
+cookie string under `session`, so nothing stored says which one ran, and
+recording it would mean new state beside the session.
 
 **Traps.**
 

@@ -122,6 +122,8 @@ encrypts cookies with a fixed, publicly known key, so `0700` is all that protect
 the session cookie too: use `--fresh-profile` there. See
 [SECURITY.md](SECURITY.md).
 
+- `--browser` takes no other login flag but `--fresh-profile`: beside any other
+  it is a usage error (exit 2) that names the flag.
 - `wfr auth login --browser --fresh-profile` signs in through a scratch profile
   deleted afterwards, and leaves the kept one alone. Wealthfront sees a new
   device, so expect its full sign-in.

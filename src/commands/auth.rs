@@ -56,11 +56,22 @@ use crate::keychain::{
     self, DEVICE_ACCOUNT, PASSWORD_ACCOUNT, PENDING_ACCOUNT, SERVICE_ENV, SESSION_ACCOUNT,
 };
 
-/// `--browser` captures the session, so it takes no other credential source:
-/// clap refuses it beside `--stdin` or `--from-env` (exit 2) before anything
-/// reads the keychain or the network (cli-common DESIGN.md §2.2).
+/// `--browser` captures the session and reads only `--fresh-profile`, so clap
+/// refuses it beside every other login flag (exit 2) rather than ignore the flag,
+/// before anything reads the keychain or the network or opens Chrome
+/// (cli-common DESIGN.md §2.2).
 #[derive(clap::Args, Debug)]
-#[command(mut_arg("browser", |a| a.conflicts_with_all(["stdin", "from_env"])))]
+#[command(mut_arg("browser", |a| {
+    a.conflicts_with_all([
+        "stdin",
+        "from_env",
+        "code",
+        "no_verify",
+        "overwrite",
+        "non_interactive",
+        "channel",
+    ])
+}))]
 pub struct PortalLoginArgs {
     #[command(flatten)]
     pub base: LoginArgs,
