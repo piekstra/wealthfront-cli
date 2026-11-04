@@ -30,10 +30,12 @@ where Wealthfront's session cookies also sit.
 browser profile (below); `--forget` also removes the stored password, device
 token, and config identity.
 
+On Windows, whose Credential Manager holds 2,560 bytes per credential, a longer value is stored across several credentials with the suffix `.pk-split-` and read back whole. After a downgrade, run `wfr auth logout --forget` again from a current build: an older build's logout leaves the parts.
+
 ## Browser sign-in
 
 `wfr auth login --browser` runs cli-common's `pk-cli-browser` ([cli-common
-DESIGN.md §2.2](https://github.com/piekstra/cli-common/blob/v0.20.0/DESIGN.md)).
+DESIGN.md §2.2](https://github.com/piekstra/cli-common/blob/v0.27.0/DESIGN.md)).
 You type the password and the 2FA code on Wealthfront's own page in a Chrome
 window; they never pass through `wfr`. While the window is open:
 

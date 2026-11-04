@@ -20,7 +20,8 @@ use std::sync::Mutex;
 
 use pk_cli_core::{dates, CliError, Money};
 use pk_cli_mcp::{
-    parse_args, ListArgs, Page, PageRequest, Server, ToolDef, ToolError, ToolOutput, Toolset,
+    parse_args, ListArgs, Order, Page, PageRequest, PositionKey, PositionRequest, Server, ToolDef,
+    ToolError, ToolOutput, Toolset,
 };
 use pk_cli_secrets::CredentialStore;
 use schemars::JsonSchema;
@@ -116,24 +117,14 @@ impl<S: Source> WealthfrontTools<S> {
 }
 
 /// A provider failure as a tool error; a sign-in failure names the browser
-/// login.
+/// login, in place of the remedy its message closes on, so the user has one
+/// command to pick.
 fn tool_err(e: CliError) -> ToolError {
-    match e {
-        CliError::Auth(m) => ToolError::auth(auth_reason(&m)).with_fix(SIGN_IN),
-        other => other.into(),
+    if e.is_auth() {
+        ToolError::from(e).with_fix(SIGN_IN)
+    } else {
+        e.into()
     }
-}
-
-/// Why the read was refused, without the CLI's own remedy (a closing "run
-/// `wfr auth login`"): the fix names the one command to ask for, and a
-/// second, often different, command in the same error would leave the user
-/// to pick.
-fn auth_reason(m: &str) -> &str {
-    [" — run `", "; run `"]
-        .iter()
-        .filter_map(|sep| m.find(sep))
-        .min()
-        .map_or(m, |cut| &m[..cut])
 }
 
 fn is_zero(n: &usize) -> bool {
@@ -381,7 +372,7 @@ impl<S: Source> WealthfrontTools<S> {
         )?;
         let account = non_empty(args.account.as_deref());
         let kind = non_empty(args.kind.as_deref());
-        let page = PageRequest::new(
+        let page = PositionRequest::new(
             &args.list,
             &ActivityFilter {
                 since: &since,
@@ -395,7 +386,7 @@ impl<S: Source> WealthfrontTools<S> {
         let records = self.source.accounts().await.map_err(tool_err)?;
         let all = account_refs(&records)?;
         let mut unreadable = 0;
-        let mut matched: Vec<ActivityItem> = Vec::new();
+        let mut matched: Vec<(PositionKey, ActivityItem)> = Vec::new();
         for acct in pick(&all, account)? {
             let rows = self.source.activity(&acct.id).await.map_err(tool_err)?;
             for row in rows.iter().filter(|r| transactions::is_transaction_row(r)) {
@@ -413,24 +404,37 @@ impl<S: Source> WealthfrontTools<S> {
                 {
                     continue;
                 }
-                matched.push(ActivityItem {
-                    date: tx.date,
-                    kind: tx.kind,
-                    description: tx.description,
-                    amount: tx.amount.amount,
-                    account: acct.name.clone(),
-                    id: pick_str(row, &["id"]).filter(|_| detailed),
-                });
+                let id = pick_str(row, &["id"]);
+                // A row without an id is told apart by what it says, so it keeps its place
+                // across pages.
+                let key = PositionKey::new(
+                    tx.date.as_str(),
+                    id.as_deref().unwrap_or(&format!(
+                        "{} {} {}",
+                        acct.name,
+                        tx.description.as_deref().unwrap_or_default(),
+                        tx.amount.amount
+                    )),
+                );
+                matched.push((
+                    key,
+                    ActivityItem {
+                        date: tx.date,
+                        kind: tx.kind,
+                        description: tx.description,
+                        amount: tx.amount.amount,
+                        account: acct.name.clone(),
+                        id: id.filter(|_| detailed),
+                    },
+                ));
             }
         }
-        // Newest first across accounts; a stable sort keeps Wealthfront's
-        // order within a day.
-        matched.sort_by(|a, b| b.date.cmp(&a.date));
         ToolOutput::new(&ActivityOut {
             since,
             until,
             unreadable,
-            page: page.page(matched, "since/until, account or type")?,
+            // Newest first across accounts. A row that arrives between pages repeats nothing.
+            page: page.page(matched, Order::Descending, "since/until, account or type")?,
         })
     }
 
@@ -445,7 +449,7 @@ impl<S: Source> WealthfrontTools<S> {
                 )));
             }
         }
-        let page = PageRequest::new(
+        let page = PositionRequest::new(
             &args.list,
             &DocumentsFilter {
                 kind,
@@ -456,28 +460,31 @@ impl<S: Source> WealthfrontTools<S> {
         let detailed = args.list.format().is_detailed();
 
         let records = self.source.documents().await.map_err(tool_err)?;
-        let mut matched: Vec<DocumentItem> = records
+        let matched: Vec<(PositionKey, DocumentItem)> = records
             .iter()
             .filter_map(documents::to_document)
-            .map(|d| DocumentItem {
-                kind: d.category.as_deref().map(type_word),
-                date: d.date,
-                name: d.name,
-                id: detailed.then_some(d.id),
+            .map(|d| {
+                let key = PositionKey::new(d.date.as_deref().unwrap_or_default(), &d.id);
+                let item = DocumentItem {
+                    kind: d.category.as_deref().map(type_word),
+                    date: d.date,
+                    name: d.name,
+                    id: detailed.then_some(d.id),
+                };
+                (key, item)
             })
-            .filter(|d| kind.is_none_or(|k| d.kind.as_deref() == Some(k)))
+            .filter(|(_, d)| kind.is_none_or(|k| d.kind.as_deref() == Some(k)))
             // As `documents list`: an undated document stays in any window.
-            .filter(|d| {
+            .filter(|(_, d)| {
                 d.date.as_deref().is_none_or(|x| {
                     since.as_deref().is_none_or(|s| x >= s)
                         && until.as_deref().is_none_or(|u| x <= u)
                 })
             })
             .collect();
-        // Newest first; undated last.
-        matched.sort_by(|a, b| b.date.cmp(&a.date));
         ToolOutput::new(&DocumentsOut {
-            page: page.page(matched, "type or since/until")?,
+            // Newest first; undated last.
+            page: page.page(matched, Order::Descending, "type or since/until")?,
         })
     }
 }

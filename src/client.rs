@@ -253,9 +253,12 @@ impl Wf {
     /// tests (the same pattern as sofi-cli's `with_base`).
     fn with_base(base: String) -> Result<Self, CliError> {
         let jar = Arc::new(Jar::default());
+        // No redirect to another host, for any request. reqwest re-sends a body on a 307 or 308,
+        // and a password or a code can be in one, and it keeps `x-csrf-token` on every hop.
         let http = pk_cli_http::builder("wfr", env!("CARGO_PKG_VERSION"))
             .cookie_provider(jar.clone())
             .timeout(Duration::from_secs(45))
+            .redirect(pk_cli_core::transport::same_host_redirects())
             .build()
             .map_err(|e| CliError::Upstream(format!("building HTTP client: {e}")))?;
         Ok(Wf {
@@ -535,7 +538,7 @@ impl Wf {
         }
         let bytes = resp
             .bytes()
-            .map_err(|e| CliError::Upstream(format!("reading document body: {e}")))?
+            .map_err(|e| CliError::Upstream(format!("reading document body: {}", e.without_url())))?
             .to_vec();
         if !status.is_success() {
             return Err(CliError::Upstream(format!(
@@ -572,7 +575,9 @@ impl Wf {
             .get(self.url(endpoints::LOGIN_PAGE))
             .header("Accept", "text/html")
             .send()
-            .map_err(|e| CliError::Upstream(format!("priming the login page: {e}")))?;
+            .map_err(|e| {
+                CliError::Upstream(format!("priming the login page: {}", e.without_url()))
+            })?;
         let login_xsrf = self.login_xsrf().ok_or_else(|| {
             CliError::Upstream(
                 "Wealthfront set no login_xsrf cookie on GET /login — the login handshake \
@@ -601,9 +606,9 @@ impl Wf {
             .json(&body)
             .send()?;
         let status = resp.status();
-        let text = resp
-            .text()
-            .map_err(|e| CliError::Upstream(format!("reading login response: {e}")))?;
+        let text = resp.text().map_err(|e| {
+            CliError::Upstream(format!("reading login response: {}", e.without_url()))
+        })?;
         classify_login(status.as_u16(), &text)
     }
 
@@ -1251,6 +1256,44 @@ mod tests {
             .into_iter()
             .find(|req| req.starts_with("POST "))
             .expect("the login POST arrived")
+    }
+
+    /// reqwest re-sends a body on a 307 or 308, so the password stays on the host it was for.
+    #[test]
+    fn a_login_answered_with_a_307_to_another_host_sends_the_password_nowhere() {
+        let (base, handle) = crate::loopback::serve(2, move |req| {
+            if req.starts_with("GET /login") {
+                crate::loopback::response(
+                    "200 OK",
+                    &["Set-Cookie: login_xsrf=abc; Path=/; HttpOnly"],
+                    "<html>",
+                )
+            } else {
+                crate::loopback::response(
+                    "307 Temporary Redirect",
+                    &["Location: http://127.0.0.1:9/elsewhere"],
+                    "",
+                )
+            }
+        });
+        let wf = Wf::with_base(base).expect("client builds");
+        let err = wf
+            .login("probe@example.invalid", &Secret::new("dummy-pw"))
+            .unwrap_err();
+        assert!(err.to_string().contains("another host"), "{err}");
+        handle.join().expect("server thread");
+    }
+
+    /// A read carries `x-csrf-token`, which reqwest keeps across hosts.
+    #[test]
+    fn a_read_answered_with_a_redirect_to_another_host_goes_no_further() {
+        let (base, handle) = crate::loopback::serve(1, move |_| {
+            crate::loopback::response("302 Found", &["Location: http://127.0.0.1:9/elsewhere"], "")
+        });
+        let wf = Wf::with_base(base).expect("client builds");
+        let err = wf.get_json("/capitan/v1/me").unwrap_err();
+        assert!(err.to_string().contains("another host"), "{err}");
+        handle.join().expect("server thread");
     }
 
     #[test]
