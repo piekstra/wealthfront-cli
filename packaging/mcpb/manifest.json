@@ -16,7 +16,7 @@
   "homepage": "https://github.com/piekstra/wealthfront-cli",
   "documentation": "https://github.com/piekstra/wealthfront-cli#use-with-claude",
   "support": "https://github.com/piekstra/wealthfront-cli/issues",
-  "license": "MIT",
+  "license": "AGPL-3.0-only",
   "keywords": ["wealthfront", "cash account", "investing", "finance", "read-only"],
   "server": {
     "type": "binary",
